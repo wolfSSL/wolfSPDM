@@ -1,6 +1,6 @@
 /* spdm_context.c
  *
- * Copyright (C) 2006-2025 wolfSSL Inc.
+ * Copyright (C) 2006-2026 wolfSSL Inc.
  *
  * This file is part of wolfSPDM.
  *
@@ -19,47 +19,25 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
+#ifdef HAVE_CONFIG_H
+    #include <config.h>
+#endif
+
 #include "spdm_internal.h"
 #include <stdarg.h>
 #include <stdio.h>
 
-/* --- Context Management --- */
-
-/* Wipe every long-lived session-key field. Used by Disconnect, ConnectStandard
- * reset, and anywhere derived material from a prior session must not leak
- * into the next. */
-static void wolfSPDM_WipeSessionKeys(WOLFSPDM_CTX* ctx)
-{
-    wc_ForceZero(ctx->sharedSecret, sizeof(ctx->sharedSecret));
-    wc_ForceZero(ctx->handshakeSecret, sizeof(ctx->handshakeSecret));
-    wc_ForceZero(ctx->reqHsSecret, sizeof(ctx->reqHsSecret));
-    wc_ForceZero(ctx->rspHsSecret, sizeof(ctx->rspHsSecret));
-    wc_ForceZero(ctx->reqFinishedKey, sizeof(ctx->reqFinishedKey));
-    wc_ForceZero(ctx->rspFinishedKey, sizeof(ctx->rspFinishedKey));
-    wc_ForceZero(ctx->reqDataKey, sizeof(ctx->reqDataKey));
-    wc_ForceZero(ctx->rspDataKey, sizeof(ctx->rspDataKey));
-    wc_ForceZero(ctx->reqDataIv, sizeof(ctx->reqDataIv));
-    wc_ForceZero(ctx->rspDataIv, sizeof(ctx->rspDataIv));
-    wc_ForceZero(ctx->reqAppSecret, sizeof(ctx->reqAppSecret));
-    wc_ForceZero(ctx->rspAppSecret, sizeof(ctx->rspAppSecret));
-    wc_ForceZero(ctx->th1, sizeof(ctx->th1));
-    ctx->sharedSecretSz = 0;
-}
+/* ----- Context Management ----- */
 
 int wolfSPDM_Init(WOLFSPDM_CTX* ctx)
 {
     int rc;
-    word16 sid;
 
     if (ctx == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
 
-    /* Clean slate - do NOT read any fields before this (could be garbage).
-     * Callers must wolfSPDM_Free before re-initializing an existing ctx;
-     * skipping that step leaks the wolfCrypt RNG/ECC/SHA states opened by
-     * the prior Init. We cannot reliably detect that from inside Init
-     * (the flag byte is itself part of the garbage we are about to wipe). */
+    /* Clean slate, dont read fields before this */
     XMEMSET(ctx, 0, sizeof(WOLFSPDM_CTX));
     ctx->state = WOLFSPDM_STATE_INIT;
 
@@ -70,31 +48,11 @@ int wolfSPDM_Init(WOLFSPDM_CTX* ctx)
     }
     ctx->flags.rngInitialized = 1;
 
-    /* Set default requester capabilities */
-    ctx->reqCaps = WOLFSPDM_DEFAULT_REQ_CAPS;
-
-    /* Key-exchange advertisement: DHE always; ML-KEM (all sets, at 1.4)
-     * dual-stack alongside it by default. wolfSPDM_SetKeyExchangePref overrides. */
-    ctx->kexAdvDhe = 1;
-#ifdef WOLFSPDM_HAVE_MLKEM
-    ctx->kexAdvKem = (word16)(SPDM_KEM_ALGO_ML_KEM_512 |
-                              SPDM_KEM_ALGO_ML_KEM_768 |
-                              SPDM_KEM_ALGO_ML_KEM_1024);
-#endif
-
-    /* Pick a random, non-reserved ReqSessionID (DSP0277 reserves 0x0000 and
-     * 0xFFFF). Callers needing determinism can override via
-     * wolfSPDM_SetRequesterSessionId. */
-    do {
-        if (wc_RNG_GenerateBlock(&ctx->rng, (byte*)&sid, sizeof(sid)) != 0) {
-            sid = 0x0001;  /* RNG failed; fall back to legacy default */
-            break;
-        }
-    } while (sid == 0x0000 || sid == 0xFFFF);
-    ctx->reqSessionId = sid;
+    /* Set default session ID (0x0001 is valid; 0x0000/0xFFFF are reserved) */
+    ctx->reqSessionId = 0x0001;
 
     ctx->flags.initialized = 1;
-    /* isDynamic remains 0 - only wolfSPDM_New sets it */
+    /* isDynamic remains 0, only wolfSPDM_New sets it */
 
     return WOLFSPDM_SUCCESS;
 }
@@ -122,18 +80,13 @@ WOLFSPDM_CTX* wolfSPDM_New(void)
 
 void wolfSPDM_Free(WOLFSPDM_CTX* ctx)
 {
-#ifdef WOLFSPDM_DYNAMIC_MEMORY
     int wasDynamic;
-#endif
 
     if (ctx == NULL) {
         return;
     }
 
-#ifdef WOLFSPDM_DYNAMIC_MEMORY
-    /* Capture before wc_ForceZero wipes ctx->flags. */
     wasDynamic = ctx->flags.isDynamic;
-#endif
 
     /* Free RNG */
     if (ctx->flags.rngInitialized) {
@@ -142,21 +95,8 @@ void wolfSPDM_Free(WOLFSPDM_CTX* ctx)
 
     /* Free ephemeral key */
     if (ctx->flags.ephemeralKeyInit) {
-        wolfSPDM_FreeEphemeralKey(ctx);
+        wc_ecc_free(&ctx->ephemeralKey);
     }
-
-    /* Free responder public key (used for measurement/challenge verification) */
-    if (ctx->flags.hasResponderPubKey) {
-        wolfSPDM_FreeResponderPubKey(ctx);
-    }
-
-#ifndef NO_WOLFSPDM_CHALLENGE
-    /* Free M1/M2 challenge hash if still initialized */
-    if (ctx->flags.m1m2HashInit) {
-        wc_Sha384Free(&ctx->m1m2Hash);
-        ctx->flags.m1m2HashInit = 0;
-    }
-#endif
 
     /* Zero entire struct (covers all sensitive key material) */
     wc_ForceZero(ctx, sizeof(WOLFSPDM_CTX));
@@ -165,6 +105,8 @@ void wolfSPDM_Free(WOLFSPDM_CTX* ctx)
     if (wasDynamic) {
         XFREE(ctx, NULL, DYNAMIC_TYPE_TMP_BUFFER);
     }
+#else
+    (void)wasDynamic;
 #endif
 }
 
@@ -172,18 +114,6 @@ int wolfSPDM_GetCtxSize(void)
 {
     return (int)sizeof(WOLFSPDM_CTX);
 }
-
-/* Catch struct growth past the public WOLFSPDM_CTX_STATIC_SIZE at compile
- * time rather than at wolfSPDM_InitStatic runtime. Negative array size if
- * the static buffer is no longer sufficient. */
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-_Static_assert(sizeof(struct WOLFSPDM_CTX) <= WOLFSPDM_CTX_STATIC_SIZE,
-    "WOLFSPDM_CTX_STATIC_SIZE must be >= sizeof(struct WOLFSPDM_CTX); "
-    "bump the public macro in wolfspdm/spdm.h");
-#else
-typedef char wolfSPDM_ctx_static_size_check
-    [(sizeof(struct WOLFSPDM_CTX) <= WOLFSPDM_CTX_STATIC_SIZE) ? 1 : -1];
-#endif
 
 int wolfSPDM_InitStatic(WOLFSPDM_CTX* ctx, int size)
 {
@@ -198,7 +128,7 @@ int wolfSPDM_InitStatic(WOLFSPDM_CTX* ctx, int size)
     return wolfSPDM_Init(ctx);
 }
 
-/* --- Configuration --- */
+/* ----- Configuration ----- */
 
 int wolfSPDM_SetIO(WOLFSPDM_CTX* ctx, WOLFSPDM_IO_CB ioCb, void* userCtx)
 {
@@ -212,113 +142,121 @@ int wolfSPDM_SetIO(WOLFSPDM_CTX* ctx, WOLFSPDM_IO_CB ioCb, void* userCtx)
     return WOLFSPDM_SUCCESS;
 }
 
-int wolfSPDM_SetTrustedCAs(WOLFSPDM_CTX* ctx, const byte* derCerts,
-    word32 derCertsSz)
+int wolfSPDM_SetResponderPubKey(WOLFSPDM_CTX* ctx,
+    const byte* pubKey, word32 pubKeySz)
 {
-    if (ctx == NULL || derCerts == NULL || derCertsSz == 0) {
+    if (ctx == NULL || pubKey == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
 
-    if (derCertsSz > WOLFSPDM_MAX_TRUSTED_CA) {
-        return WOLFSPDM_E_BUFFER_SMALL;
+    if (pubKeySz != WOLFSPDM_ECC_POINT_SIZE) {
+        return WOLFSPDM_E_INVALID_ARG;
     }
 
-    XMEMCPY(ctx->trustedCAs, derCerts, derCertsSz);
-    ctx->trustedCAsSz = derCertsSz;
-    ctx->flags.hasTrustedCAs = 1;
+    XMEMCPY(ctx->rspPubKey, pubKey, pubKeySz);
+    ctx->rspPubKeyLen = pubKeySz;
+    ctx->flags.hasRspPubKey = 1;
 
     return WOLFSPDM_SUCCESS;
 }
+
+int wolfSPDM_SetRequesterKeyPair(WOLFSPDM_CTX* ctx,
+    const byte* privKey, word32 privKeySz,
+    const byte* pubKey, word32 pubKeySz)
+{
+    if (ctx == NULL || privKey == NULL || pubKey == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+
+    if (privKeySz != WOLFSPDM_ECC_KEY_SIZE ||
+        pubKeySz != WOLFSPDM_ECC_POINT_SIZE) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+
+    XMEMCPY(ctx->reqPrivKey, privKey, privKeySz);
+    ctx->reqPrivKeyLen = privKeySz;
+    XMEMCPY(ctx->reqPubKey, pubKey, pubKeySz);
+    ctx->flags.hasReqKeyPair = 1;
+
+    return WOLFSPDM_SUCCESS;
+}
+
+#ifdef WOLFSPDM_TCG
+int wolfSPDM_SetRequesterKeyTPMT(WOLFSPDM_CTX* ctx,
+    const byte* tpmtPub, word32 tpmtPubSz)
+{
+    if (ctx == NULL || tpmtPub == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    if (tpmtPubSz > sizeof(ctx->reqPubKeyTPMT)) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    XMEMCPY(ctx->reqPubKeyTPMT, tpmtPub, tpmtPubSz);
+    ctx->reqPubKeyTPMTLen = tpmtPubSz;
+    return WOLFSPDM_SUCCESS;
+}
+#endif /* WOLFSPDM_TCG */
+
+/* wolfSPDM_SetPSK moved to spdm_psk.c */
 
 void wolfSPDM_SetDebug(WOLFSPDM_CTX* ctx, int enable)
 {
     if (ctx != NULL) {
-        ctx->flags.debug = enable ? 1 : 0;
+        ctx->flags.debug = (enable != 0);
     }
 }
 
-byte wolfSPDM_GetLastPeerError(WOLFSPDM_CTX* ctx)
-{
-    return (ctx != NULL) ? ctx->lastPeerErrorCode : 0;
-}
-
-/* Backwards-compat: the old function name from before the rename to
- * wolfSPDM_GetNegotiatedVersion. Kept so binaries already linked against
- * the old symbol still resolve. */
-byte wolfSPDM_GetVersion_Negotiated(WOLFSPDM_CTX* ctx)
-{
-    return wolfSPDM_GetNegotiatedVersion(ctx);
-}
-
-int wolfSPDM_SetRequesterSessionId(WOLFSPDM_CTX* ctx, word16 reqSessionId)
-{
-    if (ctx == NULL) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-    /* DSP0277: 0x0000 and 0xFFFF are reserved and shall not appear on wire. */
-    if (reqSessionId == 0x0000 || reqSessionId == 0xFFFF) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-    ctx->reqSessionId = reqSessionId;
-    return WOLFSPDM_SUCCESS;
-}
-
-int wolfSPDM_AllowUntrustedCerts(WOLFSPDM_CTX* ctx, int allow)
-{
-    if (ctx == NULL) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-    ctx->flags.allowUntrustedCert = allow ? 1 : 0;
-    return WOLFSPDM_SUCCESS;
-}
-
-int wolfSPDM_SetMaxVersion(WOLFSPDM_CTX* ctx, byte maxVersion)
+int wolfSPDM_SetMode(WOLFSPDM_CTX* ctx, WOLFSPDM_MODE mode)
 {
     if (ctx == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
 
-    /* 0 means reset to compile-time default */
-    if (maxVersion == 0) {
-        ctx->maxVersion = 0;
+#if !defined(WOLFSPDM_NUVOTON) && !defined(WOLFSPDM_NATIONS) && \
+    !defined(WOLFSPDM_PSK)
+    (void)mode;
+#endif
+
+#ifdef WOLFSPDM_NUVOTON
+    if (mode == WOLFSPDM_MODE_NUVOTON) {
+        ctx->mode = WOLFSPDM_MODE_NUVOTON;
+        ctx->connectionHandle = WOLFSPDM_NUVOTON_CONN_HANDLE_DEFAULT;
+        ctx->fipsIndicator = WOLFSPDM_NUVOTON_FIPS_DEFAULT;
         return WOLFSPDM_SUCCESS;
     }
-
-    /* Validate range. WOLFSPDM_MAX_SPDM_VERSION is the build-time ceiling
-     * and is authoritative: the runtime setter cannot raise it. */
-    if (maxVersion < WOLFSPDM_MIN_SPDM_VERSION ||
-        maxVersion > WOLFSPDM_MAX_SPDM_VERSION) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-
-    ctx->maxVersion = maxVersion;
-    return WOLFSPDM_SUCCESS;
-}
-
-int wolfSPDM_SetKeyExchangePref(WOLFSPDM_CTX* ctx, int advDhe, word16 kemMask)
-{
-    if (ctx == NULL) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-    if (advDhe == 0 && kemMask == 0) {
-        return WOLFSPDM_E_INVALID_ARG;  /* must advertise at least one method */
-    }
-    if ((kemMask & ~(word16)(SPDM_KEM_ALGO_ML_KEM_512 |
-                             SPDM_KEM_ALGO_ML_KEM_768 |
-                             SPDM_KEM_ALGO_ML_KEM_1024)) != 0) {
-        return WOLFSPDM_E_INVALID_ARG;  /* undefined ML-KEM bit(s) */
-    }
-#ifndef WOLFSPDM_HAVE_MLKEM
-    if (kemMask != 0) {
-        return WOLFSPDM_E_INVALID_ARG;  /* ML-KEM not built in */
+#endif
+#ifdef WOLFSPDM_NATIONS
+    if (mode == WOLFSPDM_MODE_NATIONS) {
+        ctx->mode = WOLFSPDM_MODE_NATIONS;
+        ctx->connectionHandle = 0;
+        /* Default to NON_FIPS; overridden by auto-detect if FIPS configured */
+        ctx->fipsIndicator = WOLFSPDM_FIPS_NON_FIPS;
+        return WOLFSPDM_SUCCESS;
     }
 #endif
-    ctx->kexAdvDhe = (byte)(advDhe != 0);
-    ctx->kexAdvKem = kemMask;
-    return WOLFSPDM_SUCCESS;
+#ifdef WOLFSPDM_PSK
+    /* Spec-pure PSK mode - DSP0274 handshake. Available whenever the PSK
+     * feature is built, independent of any vendor adapter. */
+    if (mode == WOLFSPDM_MODE_NATIONS_PSK) {
+        ctx->mode = WOLFSPDM_MODE_NATIONS_PSK;
+        ctx->connectionHandle = 0;
+        ctx->fipsIndicator = WOLFSPDM_FIPS_NON_FIPS;
+        return WOLFSPDM_SUCCESS;
+    }
+#endif
+
+    return WOLFSPDM_E_INVALID_ARG;  /* Unsupported mode */
 }
 
-/* --- Session Status --- */
+WOLFSPDM_MODE wolfSPDM_GetMode(WOLFSPDM_CTX* ctx)
+{
+    if (ctx == NULL) {
+        return WOLFSPDM_MODE_AUTO;
+    }
+    return ctx->mode;
+}
+
+/* ----- Session Status ----- */
 
 int wolfSPDM_IsConnected(WOLFSPDM_CTX* ctx)
 {
@@ -330,14 +268,7 @@ int wolfSPDM_IsConnected(WOLFSPDM_CTX* ctx)
 
 word32 wolfSPDM_GetSessionId(WOLFSPDM_CTX* ctx)
 {
-    /* Return the negotiated session ID once KEY_EXCHANGE_RSP has set it
-     * (I/O callbacks need it between KEY_EXCHANGE and FINISH to tag the
-     * encrypted FINISH record). Restrict the exposure window to states
-     * where the value is actually meaningful: from KEY_EX through CONNECTED
-     * / MEASURED. Pre-KEY_EX or in the error state, return 0 so callers
-     * that test "GetSessionId() != 0" don't see a stale or transitional id. */
-    if (ctx == NULL || ctx->state < WOLFSPDM_STATE_KEY_EX ||
-        ctx->state == WOLFSPDM_STATE_ERROR) {
+    if (ctx == NULL || ctx->state != WOLFSPDM_STATE_CONNECTED) {
         return 0;
     }
     return ctx->sessionId;
@@ -351,105 +282,25 @@ byte wolfSPDM_GetNegotiatedVersion(WOLFSPDM_CTX* ctx)
     return ctx->spdmVersion;
 }
 
-/* --- Session Establishment - Connect (Full Handshake) --- */
-
-/* Standard SPDM 1.2 connection flow (for libspdm emulator, etc.) */
-static int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx)
+#ifdef WOLFSPDM_TCG
+word32 wolfSPDM_GetConnectionHandle(WOLFSPDM_CTX* ctx)
 {
-    int rc;
-    int slot;
-    int i;
-
-    /* Reset state for new connection. Drop any cached responder public
-     * key from a prior attempt - GetCertificate's guard otherwise skips
-     * re-extraction, and KEY_EXCHANGE_RSP signature verification would
-     * then run against the stale key from the previous responder. Also
-     * clear sessionId / seqNums so a partial prior attempt can't leak
-     * state into the new handshake. */
-    if (ctx->flags.hasResponderPubKey) {
-        wolfSPDM_FreeResponderPubKey(ctx);
-        ctx->flags.hasResponderPubKey = 0;
+    if (ctx == NULL) {
+        return 0;
     }
-    /* Wipe derived key material from any prior session before starting a
-     * fresh handshake. If this new handshake fails before
-     * wolfSPDM_DeriveHandshakeKeys overwrites the fields, the prior
-     * session's secrets must not linger in the context. */
-    wolfSPDM_WipeSessionKeys(ctx);
-    ctx->state = WOLFSPDM_STATE_INIT;
-    ctx->sessionId = 0;
-    /* Preserve caller-set reqSessionId from Init / SetRequesterSessionId. */
-    ctx->rspSessionId = 0;
-    ctx->reqSeqNum = 0;
-    ctx->rspSeqNum = 0;
-    ctx->lastPeerErrorCode = 0;
-    ctx->slotMask = 0;
-    ctx->currentSlotId = 0;
-#ifndef NO_WOLFSPDM_MEAS
-    /* Drop stale measurement state from a prior connect so reconnect-
-     * without-disconnect doesn't surface old blocks. */
-    ctx->measBlockCount = 0;
-    ctx->measSignatureSize = 0;
-    ctx->flags.hasMeasurements = 0;
-#endif
-    wolfSPDM_TranscriptReset(ctx);
-
-    SPDM_CONNECT_STEP(ctx, "Step 1: GET_VERSION\n",
-        wolfSPDM_GetVersion(ctx));
-    SPDM_CONNECT_STEP(ctx, "Step 2: GET_CAPABILITIES\n",
-        wolfSPDM_GetCapabilities(ctx));
-    SPDM_CONNECT_STEP(ctx, "Step 3: NEGOTIATE_ALGORITHMS\n",
-        wolfSPDM_NegotiateAlgorithms(ctx));
-    SPDM_CONNECT_STEP(ctx, "Step 4: GET_DIGESTS\n",
-        wolfSPDM_GetDigests(ctx));
-
-    /* DSP0274 Sec. 10.5: pick the lowest-numbered slot the responder said
-     * is populated (DIGESTS Param1 SlotMask). Fall back to slot 0 if the
-     * responder did not report a mask, matching the prior behavior. */
-    slot = 0;
-    if (ctx->slotMask != 0) {
-        for (i = 0; i < 8; i++) {
-            if (ctx->slotMask & (1 << i)) {
-                slot = i;
-                break;
-            }
-        }
-    }
-    SPDM_CONNECT_STEP(ctx, "Step 5: GET_CERTIFICATE\n",
-        wolfSPDM_GetCertificate(ctx, slot));
-
-    /* Validate certificate chain if trusted CAs are loaded. GetCertificate
-     * already guarantees flags.hasResponderPubKey is set on success (returns
-     * an error otherwise), so we only need to gate on the CA-bundle. Fail
-     * closed by default: refuse to derive session keys against an
-     * unauthenticated responder unless the caller has explicitly opted
-     * into untrusted operation via wolfSPDM_AllowUntrustedCerts. */
-    if (ctx->flags.hasTrustedCAs) {
-        SPDM_CONNECT_STEP(ctx, "Validating certificate chain\n",
-            wolfSPDM_ValidateCertChain(ctx));
-    }
-    else if (!ctx->flags.allowUntrustedCert) {
-        wolfSPDM_DebugPrint(ctx,
-            "Refusing handshake: no trust anchor configured; call "
-            "wolfSPDM_SetTrustedCAs or wolfSPDM_AllowUntrustedCerts\n");
-        ctx->state = WOLFSPDM_STATE_ERROR;
-        return WOLFSPDM_E_CERT_FAIL;
-    }
-    else {
-        wolfSPDM_DebugPrint(ctx,
-            "Warning: No trusted CAs loaded - chain not validated\n");
-    }
-
-    SPDM_CONNECT_STEP(ctx, "Step 6: KEY_EXCHANGE\n",
-        wolfSPDM_KeyExchange(ctx));
-    SPDM_CONNECT_STEP(ctx, "Step 7: FINISH\n",
-        wolfSPDM_Finish(ctx));
-
-    ctx->state = WOLFSPDM_STATE_CONNECTED;
-    wolfSPDM_DebugPrint(ctx, "SPDM Session Established! SessionID=0x%08x\n",
-        ctx->sessionId);
-
-    return WOLFSPDM_SUCCESS;
+    return ctx->connectionHandle;
 }
+
+word16 wolfSPDM_GetFipsIndicator(WOLFSPDM_CTX* ctx)
+{
+    if (ctx == NULL) {
+        return 0;
+    }
+    return ctx->fipsIndicator;
+}
+#endif
+
+/* ----- Session Establishment - Connect (Full Handshake) ----- */
 
 int wolfSPDM_Connect(WOLFSPDM_CTX* ctx)
 {
@@ -465,75 +316,91 @@ int wolfSPDM_Connect(WOLFSPDM_CTX* ctx)
         return WOLFSPDM_E_IO_FAIL;
     }
 
-    return wolfSPDM_ConnectStandard(ctx);
+#ifdef WOLFSPDM_TCG
+    if (ctx->mode == WOLFSPDM_MODE_NUVOTON ||
+        ctx->mode == WOLFSPDM_MODE_NATIONS) {
+        return wolfSPDM_ConnectTCG(ctx);
+    }
+#endif
+#ifdef WOLFSPDM_PSK
+    if (ctx->mode == WOLFSPDM_MODE_NATIONS_PSK) {
+        return wolfSPDM_ConnectPsk(ctx);
+    }
+#endif
+
+    return WOLFSPDM_E_INVALID_ARG; /* Standard mode not available */
 }
 
 int wolfSPDM_Disconnect(WOLFSPDM_CTX* ctx)
 {
-    int rc = WOLFSPDM_SUCCESS;
+    int rc;
     byte txBuf[8];
     byte rxBuf[16];   /* END_SESSION_ACK: 4 bytes */
     word32 txSz, rxSz;
-    int sendEndSession;
 
     if (ctx == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
 
-    /* Only send END_SESSION when we actually have a connected secured
-     * channel. For partial-handshake failures (state below CONNECTED) we
-     * still want to wipe locally derived material on the way out. */
-    sendEndSession = (ctx->state == WOLFSPDM_STATE_CONNECTED);
+    if (ctx->state != WOLFSPDM_STATE_CONNECTED) {
+        return WOLFSPDM_E_NOT_CONNECTED;
+    }
 
-    if (sendEndSession) {
-        txSz = sizeof(txBuf);
-        rc = wolfSPDM_BuildEndSession(ctx, txBuf, &txSz);
-        if (rc == WOLFSPDM_SUCCESS) {
-            rxSz = sizeof(rxBuf);
-            rc = wolfSPDM_SecuredExchange(ctx, txBuf, txSz, rxBuf, &rxSz);
+    /* Build END_SESSION */
+    txSz = sizeof(txBuf);
+    rc = wolfSPDM_BuildEndSession(ctx, txBuf, &txSz);
+    if (rc == WOLFSPDM_SUCCESS) {
+        rxSz = sizeof(rxBuf);
+        rc = wolfSPDM_SecuredExchange(ctx, txBuf, txSz, rxBuf, &rxSz);
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        if (rxSz < 4) {
+            rc = WOLFSPDM_E_BUFFER_SMALL;
+        }
+        else if (wolfSPDM_CheckError(rxBuf, rxSz, NULL)) {
+            rc = WOLFSPDM_E_PEER_ERROR;
+        }
+        else if (rxSz != 4 || rxBuf[0] != ctx->spdmVersion ||
+                 rxBuf[1] != SPDM_END_SESSION_ACK ||
+                 rxBuf[2] != 0 || rxBuf[3] != 0) {
+            rc = WOLFSPDM_E_PEER_ERROR;
         }
     }
 
-    /* Reset state regardless of result. Free the cached responder public
-     * key so the next Connect re-extracts it from the (potentially new)
-     * responder's certificate chain - otherwise KEY_EXCHANGE_RSP signature
-     * verification on the reconnect would run against the old key. */
-    if (ctx->flags.hasResponderPubKey) {
-        wolfSPDM_FreeResponderPubKey(ctx);
-        ctx->flags.hasResponderPubKey = 0;
-    }
-    /* Wipe every long-lived session secret so disconnected contexts cannot
-     * be recovered for the duration before wolfSPDM_Free or a fresh
-     * Connect overwrites them. */
-    wolfSPDM_WipeSessionKeys(ctx);
+    /* Reset session state and wipe session-scoped keys; configured identity
+     * keys remain for a later connection */
     ctx->state = WOLFSPDM_STATE_INIT;
     ctx->sessionId = 0;
-    ctx->rspSessionId = 0;
     ctx->reqSeqNum = 0;
     ctx->rspSeqNum = 0;
-    ctx->lastPeerErrorCode = 0;
-    ctx->slotMask = 0;
-    ctx->currentSlotId = 0;
-#ifndef NO_WOLFSPDM_MEAS
-    /* Drop stale measurement state so callers can't accidentally read
-     * blocks from the previous session after a reconnect. */
-    ctx->measBlockCount = 0;
-    ctx->measSignatureSize = 0;
-    ctx->flags.hasMeasurements = 0;
-#endif
-
-    /* If we never had a session, the caller did not request a real
-     * Disconnect; surface that distinction without masking it as a
-     * successful teardown. */
-    if (!sendEndSession) {
-        return WOLFSPDM_E_NOT_CONNECTED;
+    /* App data keys */
+    wc_ForceZero(ctx->reqDataKey, sizeof(ctx->reqDataKey));
+    wc_ForceZero(ctx->rspDataKey, sizeof(ctx->rspDataKey));
+    wc_ForceZero(ctx->reqDataIv, sizeof(ctx->reqDataIv));
+    wc_ForceZero(ctx->rspDataIv, sizeof(ctx->rspDataIv));
+    /* Handshake keys */
+    wc_ForceZero(ctx->reqHsSecret, sizeof(ctx->reqHsSecret));
+    wc_ForceZero(ctx->rspHsSecret, sizeof(ctx->rspHsSecret));
+    wc_ForceZero(ctx->reqFinishedKey, sizeof(ctx->reqFinishedKey));
+    wc_ForceZero(ctx->rspFinishedKey, sizeof(ctx->rspFinishedKey));
+    /* Secrets and hashes */
+    wc_ForceZero(ctx->handshakeSecret, sizeof(ctx->handshakeSecret));
+    wc_ForceZero(ctx->sharedSecret, sizeof(ctx->sharedSecret));
+    ctx->sharedSecretSz = 0;
+    wc_ForceZero(ctx->th1, sizeof(ctx->th1));
+    wc_ForceZero(ctx->th2, sizeof(ctx->th2));
+    /* Free ephemeral ECC key */
+    if (ctx->flags.ephemeralKeyInit) {
+        wc_ecc_free(&ctx->ephemeralKey);
+        ctx->flags.ephemeralKeyInit = 0;
     }
+
     return rc;
 }
 
-/* --- I/O Helper --- */
+/* ----- I/O Helper ----- */
 
-int wolfSPDM_SendReceiveRaw(WOLFSPDM_CTX* ctx,
+int wolfSPDM_SendReceive(WOLFSPDM_CTX* ctx,
     const byte* txBuf, word32 txSz,
     byte* rxBuf, word32* rxSz)
 {
@@ -543,6 +410,100 @@ int wolfSPDM_SendReceiveRaw(WOLFSPDM_CTX* ctx,
         return WOLFSPDM_E_IO_FAIL;
     }
 
+#ifdef WOLFSPDM_TCG
+    if (ctx->mode == WOLFSPDM_MODE_NUVOTON ||
+        ctx->mode == WOLFSPDM_MODE_NATIONS ||
+        ctx->mode == WOLFSPDM_MODE_NATIONS_PSK) {
+        /* Wrap messages with TCG SPDM
+         * headers; I/O sends TCG-framed messages. */
+        byte tcgTx[WOLFSPDM_MAX_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD +
+                   WOLFSPDM_TCG_HEADER_SIZE];
+        byte tcgRx[WOLFSPDM_MAX_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD +
+                   WOLFSPDM_TCG_HEADER_SIZE];
+        word32 tcgRxSz = sizeof(tcgRx);
+        int tcgTxSz;
+        word32 msgSize;
+        word32 payloadSz;
+        word16 tag;
+
+        /* Detect message type: SPDM version byte 0x10-0x1F = clear message.
+         * Secured records start with SessionID (LE, typically 0x01 0x00...),
+         * which is never in the SPDM version range. */
+        if (txSz > 0 && txBuf[0] >= 0x10 && txBuf[0] <= 0x1F) {
+            /* Clear SPDM message - wrap with TCG clear header (0x8101) */
+            tcgTxSz = wolfSPDM_BuildTcgClearMessage(ctx, txBuf, txSz,
+                tcgTx, sizeof(tcgTx));
+        } else {
+            /* Secured record - prepend TCG secured header (0x8201) */
+            word32 totalSz;
+            if (txSz > sizeof(tcgTx) - WOLFSPDM_TCG_HEADER_SIZE) {
+                return WOLFSPDM_E_BUFFER_SMALL;
+            }
+            totalSz = WOLFSPDM_TCG_HEADER_SIZE + txSz;
+            wolfSPDM_WriteTcgHeader(tcgTx, WOLFSPDM_TCG_TAG_SECURED,
+                totalSz, ctx->connectionHandle, ctx->fipsIndicator);
+            XMEMCPY(tcgTx + WOLFSPDM_TCG_HEADER_SIZE, txBuf, txSz);
+            tcgTxSz = (int)totalSz;
+        }
+
+        if (tcgTxSz < 0) {
+            return tcgTxSz;
+        }
+
+        wolfSPDM_DebugHex(ctx, "TCG TX", tcgTx, (word32)tcgTxSz);
+
+        /* Send/receive via I/O callback (raw transport) */
+        rc = ctx->ioCb(ctx, tcgTx, (word32)tcgTxSz, tcgRx, &tcgRxSz,
+            ctx->ioUserCtx);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "TCG I/O failed: %d\n", rc);
+            return WOLFSPDM_E_IO_FAIL;
+        }
+
+        wolfSPDM_DebugHex(ctx, "TCG RX", tcgRx, tcgRxSz);
+
+        /* Strip TCG binding header from response */
+        if (tcgRxSz < WOLFSPDM_TCG_HEADER_SIZE) {
+            wolfSPDM_DebugPrint(ctx, "SendReceive: response too short (%u)\n",
+                tcgRxSz);
+            return WOLFSPDM_E_BUFFER_SMALL;
+        }
+
+        tag = SPDM_Get16BE(tcgRx);
+        if (tag != WOLFSPDM_TCG_TAG_CLEAR && tag != WOLFSPDM_TCG_TAG_SECURED) {
+            wolfSPDM_DebugPrint(ctx, "SendReceive: unexpected TCG tag "
+                "0x%04x\n", tag);
+            return WOLFSPDM_E_PEER_ERROR;
+        }
+
+        /* Capture FIPS indicator from response if non-zero */
+        tag = SPDM_Get16BE(tcgRx + 10);
+        if (tag != 0) {
+            ctx->fipsIndicator = tag;
+        }
+
+        /* Extract payload (everything after 16-byte TCG header) */
+        msgSize = SPDM_Get32BE(tcgRx + 2);
+
+        if (msgSize < WOLFSPDM_TCG_HEADER_SIZE || msgSize > tcgRxSz) {
+            wolfSPDM_DebugPrint(ctx, "SendReceive: TCG size %u invalid "
+                "(min=%u, received=%u)\n", msgSize,
+                WOLFSPDM_TCG_HEADER_SIZE, tcgRxSz);
+            return WOLFSPDM_E_BUFFER_SMALL;
+        }
+
+        payloadSz = msgSize - WOLFSPDM_TCG_HEADER_SIZE;
+        if (payloadSz > *rxSz) {
+            return WOLFSPDM_E_BUFFER_SMALL;
+        }
+
+        XMEMCPY(rxBuf, tcgRx + WOLFSPDM_TCG_HEADER_SIZE, payloadSz);
+        *rxSz = payloadSz;
+
+        return WOLFSPDM_SUCCESS;
+    }
+#endif /* WOLFSPDM_TCG */
+
     rc = ctx->ioCb(ctx, txBuf, txSz, rxBuf, rxSz, ctx->ioUserCtx);
     if (rc != 0) {
         return WOLFSPDM_E_IO_FAIL;
@@ -551,32 +512,8 @@ int wolfSPDM_SendReceiveRaw(WOLFSPDM_CTX* ctx,
     return WOLFSPDM_SUCCESS;
 }
 
-int wolfSPDM_SendReceive(WOLFSPDM_CTX* ctx,
-    const byte* txBuf, word32 txSz,
-    byte* rxBuf, word32* rxSz)
-{
-#ifdef WOLFSPDM_HAVE_CHUNK
-    word32 cap = (rxSz != NULL) ? *rxSz : 0;
-    byte handle = 0;
-#endif
-    int rc = wolfSPDM_SendReceiveRaw(ctx, txBuf, txSz, rxBuf, rxSz);
-
-#ifdef WOLFSPDM_HAVE_CHUNK
-    /* Transparently reassemble a cleartext response the responder chunked
-     * (ERROR(LargeResponse)); the caller then parses the logical message. Only
-     * when the responder actually negotiated CHUNK_CAP, so a non-conformant
-     * LargeResponse fails fast rather than driving a doomed CHUNK_GET loop. */
-    if (rc == WOLFSPDM_SUCCESS && rxSz != NULL &&
-        (ctx->rspCaps & SPDM_CAP_CHUNK_CAP) != 0 &&
-        wolfSPDM_IsLargeResponse(rxBuf, *rxSz, &handle)) {
-        rc = wolfSPDM_ReassembleLargeResponse(ctx, 0, handle, rxBuf, cap, rxSz);
-    }
-#endif
-    return rc;
-}
-
-/* --- Debug Utilities --- */
-
+/* ----- Debug Utilities ----- */
+#ifdef WOLFSPDM_DEBUG
 void wolfSPDM_DebugPrint(WOLFSPDM_CTX* ctx, const char* fmt, ...)
 {
     va_list args;
@@ -611,59 +548,9 @@ void wolfSPDM_DebugHex(WOLFSPDM_CTX* ctx, const char* label,
     printf("\n");
     fflush(stdout);
 }
+#endif
 
-/* --- Measurement Accessors --- */
-
-#ifndef NO_WOLFSPDM_MEAS
-
-int wolfSPDM_GetMeasurementCount(WOLFSPDM_CTX* ctx)
-{
-    if (ctx == NULL || !ctx->flags.hasMeasurements) {
-        return 0;
-    }
-    return (int)ctx->measBlockCount;
-}
-
-int wolfSPDM_GetMeasurementBlock(WOLFSPDM_CTX* ctx, int blockIdx,
-    byte* measIndex, byte* measType, byte* value, word32* valueSz)
-{
-    const WOLFSPDM_MEAS_BLOCK* blk;
-
-    if (ctx == NULL || !ctx->flags.hasMeasurements) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-    if (blockIdx < 0 || blockIdx >= (int)ctx->measBlockCount) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-    if (valueSz == NULL) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-
-    blk = &ctx->measBlocks[blockIdx];
-
-    if (measIndex != NULL) {
-        *measIndex = blk->index;
-    }
-    if (measType != NULL) {
-        *measType = blk->dmtfType;
-    }
-
-    if (value != NULL) {
-        word32 copySize = blk->valueSize;
-        if (copySize > *valueSz) {
-            copySize = *valueSz;
-        }
-        XMEMCPY(value, blk->value, copySize);
-    }
-    *valueSz = blk->valueSize;
-
-    return WOLFSPDM_SUCCESS;
-}
-
-#endif /* !NO_WOLFSPDM_MEAS */
-
-/* --- Error String --- */
-
+/* ----- Error String ----- */
 const char* wolfSPDM_GetErrorString(int error)
 {
     switch (error) {
@@ -683,18 +570,12 @@ const char* wolfSPDM_GetErrorString(int error)
         case WOLFSPDM_E_NOT_CONNECTED:    return "Not connected";
         case WOLFSPDM_E_ALREADY_INIT:     return "Already initialized";
         case WOLFSPDM_E_NO_MEMORY:        return "Memory allocation failed";
-        case WOLFSPDM_E_CERT_FAIL:        return "Certificate error";
-        case WOLFSPDM_E_CAPS_MISMATCH:    return "Capability mismatch";
-        case WOLFSPDM_E_ALGO_MISMATCH:    return "Algorithm mismatch";
         case WOLFSPDM_E_SESSION_INVALID:  return "Invalid session";
         case WOLFSPDM_E_KEY_EXCHANGE:     return "Key exchange failed";
-        case WOLFSPDM_E_MEASUREMENT:     return "Measurement retrieval failed";
-        case WOLFSPDM_E_MEAS_NOT_VERIFIED: return "Measurements not signature-verified";
-        case WOLFSPDM_E_MEAS_SIG_FAIL:   return "Measurement signature verification failed";
-        case WOLFSPDM_E_CERT_PARSE:      return "Failed to parse responder certificate";
-        case WOLFSPDM_E_CHALLENGE:       return "Challenge authentication failed";
-        case WOLFSPDM_E_KEY_UPDATE:      return "Key update failed";
-        case WOLFSPDM_E_CHUNK:           return "Large-response chunking failed";
+        case WOLFSPDM_E_NOT_AVAILABLE:    return "Feature not compiled in";
+        case WOLFSPDM_E_FRAMING:          return "Framing violation";
+        case WOLFSPDM_E_NOT_IMPL:         return "Not implemented";
         default:                          return "Unknown error";
     }
 }
+

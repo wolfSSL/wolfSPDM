@@ -1,6 +1,6 @@
 /* spdm_error.h
  *
- * Copyright (C) 2006-2025 wolfSSL Inc.
+ * Copyright (C) 2006-2026 wolfSSL Inc.
  *
  * This file is part of wolfSPDM.
  *
@@ -22,7 +22,6 @@
 #ifndef WOLFSPDM_ERROR_H
 #define WOLFSPDM_ERROR_H
 
-/* Pull in WOLFSPDM_API visibility macro so this header is self-contained. */
 #include <wolfspdm/spdm_types.h>
 
 #ifdef __cplusplus
@@ -47,18 +46,13 @@ enum WOLFSPDM_ERROR {
     WOLFSPDM_E_NOT_CONNECTED    = -13,  /* Session not established */
     WOLFSPDM_E_ALREADY_INIT     = -14,  /* Context already initialized */
     WOLFSPDM_E_NO_MEMORY        = -15,  /* Memory allocation failed */
-    WOLFSPDM_E_CERT_FAIL        = -16,  /* Certificate processing failed */
-    WOLFSPDM_E_CAPS_MISMATCH    = -17,  /* Capability negotiation failed */
-    WOLFSPDM_E_ALGO_MISMATCH    = -18,  /* Algorithm negotiation failed */
-    WOLFSPDM_E_SESSION_INVALID  = -19,  /* Session ID invalid or mismatch */
-    WOLFSPDM_E_KEY_EXCHANGE     = -20,  /* Key exchange failed */
-    WOLFSPDM_E_MEASUREMENT      = -21,  /* Measurement retrieval/parsing failed */
-    WOLFSPDM_E_MEAS_NOT_VERIFIED = -22, /* Measurements retrieved but not signature-verified */
-    WOLFSPDM_E_MEAS_SIG_FAIL    = -23,  /* Measurement signature verification failed */
-    WOLFSPDM_E_CERT_PARSE       = -24,  /* Failed to parse responder certificate */
-    WOLFSPDM_E_CHALLENGE         = -25,  /* Challenge authentication failed */
-    WOLFSPDM_E_KEY_UPDATE        = -26,  /* Key update failed */
-    WOLFSPDM_E_CHUNK             = -27,  /* Large-response chunking failed */
+    WOLFSPDM_E_SESSION_INVALID  = -16,  /* Session ID invalid or mismatch */
+    WOLFSPDM_E_KEY_EXCHANGE     = -17,  /* Key exchange failed */
+    WOLFSPDM_E_NOT_AVAILABLE    = -18,  /* Feature/mode not compiled in */
+    WOLFSPDM_E_FRAMING          = -19,  /* Frame did not parse (e.g. plaintext
+                                         * TPM2 sent while SPDM mode active -
+                                         * bus-snooping defence) */
+    WOLFSPDM_E_NOT_IMPL         = -20,  /* Handler not yet implemented */
 };
 
 /* Get human-readable error string */

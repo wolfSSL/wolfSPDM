@@ -1,0 +1,185 @@
+name: wolfTPM downstream
+
+# Builds wolfTPM master with this wolfSPDM tree in place of its embedded SPDM
+# sources and runs wolfTPM's SPDM test suite, so no change can land in
+# wolfSPDM that breaks wolfTPM.
+
+on:
+  push:
+    branches: [ 'main', 'wolftpm-core', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+  repository_dispatch:
+    types: [nightly-trigger]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: spdm-base-only
+            config: --enable-spdm --disable-fwtpm --disable-tcg --disable-psk
+          - name: spdm-tcg-only
+            config: --enable-fwtpm --enable-spdm --enable-tcg --disable-psk
+          - name: spdm-both
+            config: --enable-fwtpm --enable-spdm --enable-tcg --enable-psk
+          - name: spdm-nuvoton
+            config: --enable-fwtpm --enable-spdm --enable-nuvoton
+            reject: nations
+          - name: spdm-nations
+            config: --enable-fwtpm --enable-spdm --enable-nations
+            reject: nuvoton
+          - name: spdm-full-vendors
+            config: --enable-fwtpm --enable-spdm --enable-tcg --enable-psk --enable-nuvoton --enable-nations
+          - name: spdm-requester-only
+            config: --enable-spdm --enable-nuvoton --enable-nations
+          - name: spdm-debug-on
+            config: --enable-fwtpm --enable-spdm --enable-tcg --enable-psk --enable-debug
+          - name: spdm-no-getenv
+            config: --enable-fwtpm --enable-spdm --enable-tcg --enable-psk CFLAGS=-DNO_GETENV
+          - name: spdm-nuvoton-smallstack
+            config: --enable-spdm --enable-nuvoton --enable-smallstack --disable-fwtpm
+          - name: spdm-nations-smallstack
+            config: --enable-spdm --enable-nations --enable-smallstack --disable-fwtpm
+          - name: spdm-nations-debug
+            config: --enable-spdm --enable-nations --enable-debug --disable-fwtpm
+          - name: spdm-nuvoton-autodisable
+            config: --enable-spdm --enable-nuvoton --enable-debug
+          - name: spdm-nations-autodisable
+            config: --enable-spdm --enable-nations --enable-debug
+
+    steps:
+      - name: Checkout wolfTPM
+        uses: actions/checkout@v4
+        with:
+          repository: wolfSSL/wolfTPM
+          ref: master
+          persist-credentials: false
+
+      - name: Checkout wolfSPDM
+        uses: actions/checkout@v4
+        with:
+          path: wolfspdm-src
+          persist-credentials: false
+
+      - name: Setup wolfSSL
+        uses: ./.github/actions/setup-wolfssl
+        with:
+          configure-flags: --enable-wolftpm --enable-pkcallbacks --enable-keygen --enable-aescfb
+          cflags: -DWC_RSA_NO_PADDING
+          prefix: $HOME/wolfssl-install
+
+      - name: Overlay wolfSPDM onto wolfTPM
+        run: ./wolfspdm-src/scripts/wolftpm-overlay.sh .
+
+      - name: Build wolfTPM (${{ matrix.name }})
+        run: |
+          ./autogen.sh
+          ./configure ${{ matrix.config }} --with-wolfcrypt=$HOME/wolfssl-install
+          make -j"$(nproc)"
+
+      - name: Run SPDM unit tests
+        env:
+          LD_LIBRARY_PATH: ${{ format('{0}/wolfssl-install/lib', env.HOME) }}
+        run: ./src/spdm/unit_test
+
+      - name: Test unavailable vendor rejection
+        if: matrix.reject != ''
+        env:
+          LD_LIBRARY_PATH: ${{ format('{0}/wolfssl-install/lib', env.HOME) }}
+        run: |
+          set -eo pipefail
+          if [ "${{ matrix.reject }}" = "nations" ]; then
+            expected="Nations adapter is not available in this build"
+          else
+            expected="Nuvoton adapter is not available in this build"
+          fi
+          if output=$(./examples/spdm/spdm_ctrl \
+              "--vendor=${{ matrix.reject }}" --status 2>&1); then
+            echo "Expected unavailable vendor rejection"
+            exit 1
+          fi
+          grep -F "$expected" <<< "$output"
+
+  e2e:
+    name: e2e / ${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [ fwtpm-tcg, fwtpm-psk ]
+
+    steps:
+      - name: Checkout wolfTPM
+        uses: actions/checkout@v4
+        with:
+          repository: wolfSSL/wolfTPM
+          ref: master
+          persist-credentials: false
+
+      - name: Checkout wolfSPDM
+        uses: actions/checkout@v4
+        with:
+          path: wolfspdm-src
+          persist-credentials: false
+
+      - name: Setup wolfSSL
+        uses: ./.github/actions/setup-wolfssl
+        with:
+          configure-flags: --enable-wolftpm --enable-pkcallbacks --enable-keygen --enable-aescfb
+          cflags: -DWC_RSA_NO_PADDING
+          prefix: $HOME/wolfssl-install
+
+      - name: Overlay wolfSPDM onto wolfTPM
+        run: ./wolfspdm-src/scripts/wolftpm-overlay.sh .
+
+      - name: Build wolfTPM with full SPDM and vendor support
+        run: |
+          ./autogen.sh
+          ./configure --enable-fwtpm --enable-spdm \
+                      --enable-tcg --enable-psk \
+                      --enable-nuvoton --enable-nations \
+                      --enable-debug --enable-swtpm \
+                      --with-wolfcrypt=$HOME/wolfssl-install
+          make -j"$(nproc)"
+
+      - name: Run wolfTPM make check
+        env:
+          LD_LIBRARY_PATH: ${{ format('{0}/wolfssl-install/lib', env.HOME) }}
+        run: |
+          set -eo pipefail
+          make check 2>&1 | tee make-check-${{ matrix.mode }}.log
+
+      - name: Run spdm_test.sh ${{ matrix.mode }}
+        env:
+          LD_LIBRARY_PATH: ${{ format('{0}/wolfssl-install/lib', env.HOME) }}
+        run: |
+          set -eo pipefail
+          ./examples/spdm/spdm_test.sh ./examples/spdm/spdm_ctrl ${{ matrix.mode }} 2>&1 \
+              | tee spdm-${{ matrix.mode }}.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wolftpm-downstream-${{ matrix.mode }}
+          path: |
+            *.log
+            config.log
+            test-suite.log
+            tests/*.log
+            src/spdm/*.log
+            /tmp/fwtpm_spdm_test.*
+          retention-days: 14

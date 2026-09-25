@@ -115,7 +115,7 @@ jobs:
           MLDSA_FLAG=""
           if [ "${{ matrix.pqc }}" = "true" ]; then MLDSA_FLAG="--enable-mldsa"; fi
           ./autogen.sh
-          ./configure --with-wolfssl=$HOME/wolfssl-install $MLDSA_FLAG
+          ./configure --with-wolfssl=$HOME/wolfssl-install --enable-nuvoton --enable-nations --enable-responder $MLDSA_FLAG
           make -j"$(nproc)"
 
       - name: Run unit tests
@@ -129,7 +129,7 @@ jobs:
           if [ "${{ matrix.pqc }}" = "true" ]; then MLDSA_FLAG="--enable-mldsa"; fi
           make distclean || true
           ./autogen.sh
-          ./configure --with-wolfssl=$HOME/wolfssl-install --enable-dynamic-mem $MLDSA_FLAG
+          ./configure --with-wolfssl=$HOME/wolfssl-install --enable-nuvoton --enable-nations --enable-responder --enable-dynamic-mem $MLDSA_FLAG
           make -j"$(nproc)"
 
       - name: Run unit tests (dynamic-mem)

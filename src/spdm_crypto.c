@@ -1,6 +1,6 @@
 /* spdm_crypto.c
  *
- * Copyright (C) 2006-2025 wolfSSL Inc.
+ * Copyright (C) 2006-2026 wolfSSL Inc.
  *
  * This file is part of wolfSPDM.
  *
@@ -19,27 +19,23 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
+#ifdef HAVE_CONFIG_H
+    #include <config.h>
+#endif
+
 #include "spdm_internal.h"
 
-/* Left-pad a buffer in-place to targetSz with leading zeros.
- * Returns WOLFSPDM_E_CRYPTO_FAIL if currentSz exceeds targetSz - that
- * would indicate a wolfCrypt routine wrote more bytes than the protocol
- * allows (P-384 should never produce more than 48 raw bytes); silently
- * truncating would hide an internal-invariant violation. */
-static int wolfSPDM_LeftPadToSize(byte* buf, word32 currentSz, word32 targetSz)
+/* Left-pad a buffer in-place to targetSz with leading zeros */
+static void wolfSPDM_LeftPadToSize(byte* buf, word32 currentSz, word32 targetSz)
 {
-    if (currentSz > targetSz) {
-        return WOLFSPDM_E_CRYPTO_FAIL;
-    }
     if (currentSz < targetSz) {
         word32 padLen = targetSz - currentSz;
         XMEMMOVE(buf + padLen, buf, currentSz);
         XMEMSET(buf, 0, padLen);
     }
-    return WOLFSPDM_SUCCESS;
 }
 
-/* --- Random Number Generation --- */
+/* ----- Random Number Generation ----- */
 
 int wolfSPDM_GetRandom(WOLFSPDM_CTX* ctx, byte* out, word32 outSz)
 {
@@ -61,7 +57,7 @@ int wolfSPDM_GetRandom(WOLFSPDM_CTX* ctx, byte* out, word32 outSz)
     return WOLFSPDM_SUCCESS;
 }
 
-/* --- ECDHE Key Generation (P-384) --- */
+/* ----- ECDHE Key Generation (P-384) ----- */
 
 int wolfSPDM_GenerateEphemeralKey(WOLFSPDM_CTX* ctx)
 {
@@ -77,22 +73,28 @@ int wolfSPDM_GenerateEphemeralKey(WOLFSPDM_CTX* ctx)
 
     /* Free existing key if any */
     if (ctx->flags.ephemeralKeyInit) {
-        wolfSPDM_FreeEphemeralKey(ctx);
+        wc_ecc_free(&ctx->ephemeralKey);
         ctx->flags.ephemeralKeyInit = 0;
     }
-    ctx->kexType = WOLFSPDM_KEX_ECDHE;
 
     /* Initialize new key */
-    rc = wc_ecc_init(&ctx->ephemeralKey.ecc);
+    rc = wc_ecc_init(&ctx->ephemeralKey);
     if (rc != 0) {
         return WOLFSPDM_E_CRYPTO_FAIL;
     }
 
     /* Generate P-384 key pair */
-    rc = wc_ecc_make_key(&ctx->rng, WOLFSPDM_ECC_KEY_SIZE,
-        &ctx->ephemeralKey.ecc);
+    rc = wc_ecc_make_key(&ctx->rng, WOLFSPDM_ECC_KEY_SIZE, &ctx->ephemeralKey);
     if (rc != 0) {
-        wc_ecc_free(&ctx->ephemeralKey.ecc);
+        wc_ecc_free(&ctx->ephemeralKey);
+        return WOLFSPDM_E_CRYPTO_FAIL;
+    }
+
+    /* Attach RNG so timing-resistant scalar-mul inside wc_ecc_shared_secret
+     * doesn't fail with MISSING_RNG_E in builds that enable hardening. */
+    rc = wc_ecc_set_rng(&ctx->ephemeralKey, &ctx->rng);
+    if (rc != 0) {
+        wc_ecc_free(&ctx->ephemeralKey);
         return WOLFSPDM_E_CRYPTO_FAIL;
     }
 
@@ -122,37 +124,27 @@ int wolfSPDM_ExportEphemeralPubKey(WOLFSPDM_CTX* ctx,
         return WOLFSPDM_E_BUFFER_SMALL;
     }
 
-    rc = wc_ecc_export_public_raw(&ctx->ephemeralKey.ecc,
+    rc = wc_ecc_export_public_raw(&ctx->ephemeralKey,
         pubKeyX, pubKeyXSz, pubKeyY, pubKeyYSz);
     if (rc != 0) {
         return WOLFSPDM_E_CRYPTO_FAIL;
     }
 
     /* Left-pad coordinates to full size (wolfSSL may strip leading zeros) */
-    rc = wolfSPDM_LeftPadToSize(pubKeyX, *pubKeyXSz, WOLFSPDM_ECC_KEY_SIZE);
-    if (rc != WOLFSPDM_SUCCESS) {
-        return rc;
-    }
+    wolfSPDM_LeftPadToSize(pubKeyX, *pubKeyXSz, WOLFSPDM_ECC_KEY_SIZE);
     *pubKeyXSz = WOLFSPDM_ECC_KEY_SIZE;
-    rc = wolfSPDM_LeftPadToSize(pubKeyY, *pubKeyYSz, WOLFSPDM_ECC_KEY_SIZE);
-    if (rc != WOLFSPDM_SUCCESS) {
-        return rc;
-    }
+    wolfSPDM_LeftPadToSize(pubKeyY, *pubKeyYSz, WOLFSPDM_ECC_KEY_SIZE);
     *pubKeyYSz = WOLFSPDM_ECC_KEY_SIZE;
 
     return WOLFSPDM_SUCCESS;
 }
 
-/* --- ECDH Shared Secret Computation --- */
+/* ----- ECDH Shared Secret Computation ----- */
 
 int wolfSPDM_ComputeSharedSecret(WOLFSPDM_CTX* ctx,
     const byte* peerPubKeyX, const byte* peerPubKeyY)
 {
     ecc_key peerKey;
-    byte scratch[WOLFSPDM_ECC_KEY_SIZE];
-    word32 retSz;
-    word32 pad;
-    word32 i;
     int rc;
     int peerKeyInit = 0;
 
@@ -164,57 +156,42 @@ int wolfSPDM_ComputeSharedSecret(WOLFSPDM_CTX* ctx,
         return WOLFSPDM_E_BAD_STATE;
     }
 
-    /* Initialize peer key structure */
     rc = wc_ecc_init(&peerKey);
-    if (rc != 0) {
-        return WOLFSPDM_E_CRYPTO_FAIL;
+    if (rc == 0) {
+        peerKeyInit = 1;
+        rc = wc_ecc_import_unsigned(&peerKey, peerPubKeyX, peerPubKeyY,
+            NULL, ECC_SECP384R1);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "Failed to import peer public key: %d\n", rc);
+        }
     }
-    peerKeyInit = 1;
-
-    /* Import peer's public key */
-    rc = wc_ecc_import_unsigned(&peerKey,
-        peerPubKeyX, peerPubKeyY,
-        NULL,  /* No private key */
-        ECC_SECP384R1);
-    if (rc != 0) {
-        wolfSPDM_DebugPrint(ctx, "Failed to import peer public key: %d\n", rc);
-        goto cleanup;
+    /* Validate peer's public key is on the curve (prevents invalid-curve attacks) */
+    if (rc == 0) {
+        rc = wc_ecc_check_key(&peerKey);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "Peer public key invalid (not on curve): %d\n", rc);
+        }
     }
-
     /* Compute ECDH shared secret */
-    ctx->sharedSecretSz = sizeof(ctx->sharedSecret);
-    rc = wc_ecc_shared_secret(&ctx->ephemeralKey.ecc, &peerKey,
-        ctx->sharedSecret, &ctx->sharedSecretSz);
-    if (rc != 0) {
-        wolfSPDM_DebugPrint(ctx, "ECDH shared_secret failed: %d\n", rc);
-        goto cleanup;
+    if (rc == 0) {
+        ctx->sharedSecretSz = sizeof(ctx->sharedSecret);
+        rc = wc_ecc_shared_secret(&ctx->ephemeralKey, &peerKey,
+            ctx->sharedSecret, &ctx->sharedSecretSz);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "ECDH shared_secret failed: %d\n", rc);
+        }
+    }
+    if (rc == 0) {
+        wolfSPDM_LeftPadToSize(ctx->sharedSecret, ctx->sharedSecretSz,
+            WOLFSPDM_ECC_KEY_SIZE);
+        ctx->sharedSecretSz = WOLFSPDM_ECC_KEY_SIZE;
+        wolfSPDM_DebugPrint(ctx, "ECDH shared secret computed (%u bytes)\n",
+            ctx->sharedSecretSz);
+    } else {
+        wc_ForceZero(ctx->sharedSecret, sizeof(ctx->sharedSecret));
+        ctx->sharedSecretSz = 0;
     }
 
-    /* Zero-pad the X-coordinate to the full curve size in a way that does
-     * not branch on the secret's leading-zero count: always touch every
-     * byte of a scratch buffer so the memory-access pattern is independent
-     * of how many high-order zero bytes wolfCrypt stripped. The underlying
-     * wc_ecc_shared_secret length is itself a function of the secret X
-     * coordinate; this routine just keeps the wolfSPDM-level work uniform. */
-    retSz = ctx->sharedSecretSz;
-    if (retSz > WOLFSPDM_ECC_KEY_SIZE) {
-        rc = WOLFSPDM_E_CRYPTO_FAIL;
-        goto cleanup;
-    }
-    pad = WOLFSPDM_ECC_KEY_SIZE - retSz;
-    for (i = 0; i < WOLFSPDM_ECC_KEY_SIZE; i++) {
-        scratch[i] = (i < pad) ? (byte)0 : ctx->sharedSecret[i - pad];
-    }
-    XMEMCPY(ctx->sharedSecret, scratch, WOLFSPDM_ECC_KEY_SIZE);
-    wc_ForceZero(scratch, sizeof(scratch));
-    ctx->sharedSecretSz = WOLFSPDM_ECC_KEY_SIZE;
-
-    wolfSPDM_DebugPrint(ctx, "ECDH shared secret computed (%u bytes)\n",
-        ctx->sharedSecretSz);
-
-    rc = 0;
-
-cleanup:
     if (peerKeyInit) {
         wc_ecc_free(&peerKey);
     }
@@ -222,101 +199,183 @@ cleanup:
     return (rc == 0) ? WOLFSPDM_SUCCESS : WOLFSPDM_E_CRYPTO_FAIL;
 }
 
-#ifdef WOLFSPDM_HAVE_MLKEM
-/* Map the negotiated SPDM KEM selection to the wolfSSL ML-KEM parameter set. */
-static int wolfSPDM_MlKemType(word16 kemAlgSel, int* type)
+/* ----- ECDSA Signature Verification (P-384) ----- */
+
+int wolfSPDM_ExtractEccPoint(const byte* pubKey, word32 pubKeySz,
+    const byte** pubKeyX, const byte** pubKeyY)
 {
-    switch (kemAlgSel) {
-        case SPDM_KEM_ALGO_ML_KEM_512:  *type = WC_ML_KEM_512;  break;
-        case SPDM_KEM_ALGO_ML_KEM_768:  *type = WC_ML_KEM_768;  break;
-        case SPDM_KEM_ALGO_ML_KEM_1024: *type = WC_ML_KEM_1024; break;
-        default: return WOLFSPDM_E_ALGO_MISMATCH;
+    if (pubKey == NULL || pubKeyX == NULL || pubKeyY == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
     }
+
+    if (pubKeySz == WOLFSPDM_ECC_POINT_SIZE) {
+        *pubKeyX = pubKey;
+        *pubKeyY = pubKey + WOLFSPDM_ECC_KEY_SIZE;
+    }
+    else if (pubKeySz >= WOLFSPDM_ECC_POINT_SIZE + 4) {
+        word32 pointOffset = pubKeySz - (WOLFSPDM_ECC_POINT_SIZE + 4);
+        if (SPDM_Get16BE(pubKey + pointOffset) !=
+                WOLFSPDM_ECC_KEY_SIZE ||
+            SPDM_Get16BE(pubKey + pointOffset + 2 +
+                WOLFSPDM_ECC_KEY_SIZE) != WOLFSPDM_ECC_KEY_SIZE) {
+            return WOLFSPDM_E_INVALID_ARG;
+        }
+        *pubKeyX = pubKey + pointOffset + 2;
+        *pubKeyY = pubKey + pointOffset + 4 + WOLFSPDM_ECC_KEY_SIZE;
+    }
+    else {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+
     return WOLFSPDM_SUCCESS;
 }
 
-/* Generate the ephemeral ML-KEM key pair for KEY_EXCHANGE and export the
- * encapsulation key ek into ekOut. The decapsulation key dk stays in
- * ctx->ephemeralKey.mlkem for wolfSPDM_MlKemDecapsulate. */
-int wolfSPDM_GenerateMlKemKey(WOLFSPDM_CTX* ctx, byte* ekOut, word32* ekOutSz)
+int wolfSPDM_VerifySignature(WOLFSPDM_CTX* ctx, const byte* hash, word32 hashSz,
+    const byte* sig, word32 sigSz)
 {
-    int type;
-    word32 ekSz;
+    ecc_key verifyKey;
     int rc;
+    int keyInit = 0;
+    byte derSig[ECC_MAX_SIG_SIZE];
+    word32 derSigSz = sizeof(derSig);
+    int verified = 0;
+    const byte* pubKeyX;
+    const byte* pubKeyY;
 
-    if (ctx == NULL || ekOut == NULL || ekOutSz == NULL) {
+    if (ctx == NULL || hash == NULL || sig == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
-    if (!ctx->flags.rngInitialized) {
+
+    if (!ctx->flags.hasRspPubKey || ctx->rspPubKeyLen < WOLFSPDM_ECC_POINT_SIZE) {
+        wolfSPDM_DebugPrint(ctx, "No responder public key for verification\n");
         return WOLFSPDM_E_BAD_STATE;
     }
-    rc = wolfSPDM_MlKemType(ctx->kemAlgSel, &type);
+
+    if (sigSz != WOLFSPDM_ECC_SIG_SIZE) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+
+    rc = wolfSPDM_ExtractEccPoint(ctx->rspPubKey, ctx->rspPubKeyLen,
+        &pubKeyX, &pubKeyY);
     if (rc != WOLFSPDM_SUCCESS) {
         return rc;
     }
 
-    if (ctx->flags.ephemeralKeyInit) {
-        wolfSPDM_FreeEphemeralKey(ctx);
-        ctx->flags.ephemeralKeyInit = 0;
+    rc = wc_ecc_init(&verifyKey);
+    if (rc == 0) {
+        keyInit = 1;
+        rc = wc_ecc_import_unsigned(&verifyKey, pubKeyX, pubKeyY,
+            NULL, ECC_SECP384R1);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "Failed to import rsp pub key for verify: %d\n", rc);
+        }
     }
-    ctx->kexType = WOLFSPDM_KEX_MLKEM;
+    if (rc == 0) {
+        rc = wc_ecc_check_key(&verifyKey);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "Responder pub key invalid (not on curve): %d\n", rc);
+        }
+    }
+    /* Convert raw R||S signature to DER format for wolfCrypt */
+    if (rc == 0) {
+        rc = wc_ecc_rs_raw_to_sig(sig, WOLFSPDM_ECC_KEY_SIZE,
+            sig + WOLFSPDM_ECC_KEY_SIZE, WOLFSPDM_ECC_KEY_SIZE,
+            derSig, &derSigSz);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "wc_ecc_rs_raw_to_sig failed: %d\n", rc);
+        }
+    }
+    if (rc == 0) {
+        rc = wc_ecc_verify_hash(derSig, derSigSz, hash, hashSz,
+            &verified, &verifyKey);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "wc_ecc_verify_hash failed: %d\n", rc);
+        }
+    }
+    if (rc == 0 && !verified) {
+        wolfSPDM_DebugPrint(ctx, "Responder signature verification FAILED\n");
+        rc = -1;
+    }
+    if (rc == 0) {
+        wolfSPDM_DebugPrint(ctx, "Responder signature VERIFIED OK\n");
+    }
 
-    rc = wc_MlKemKey_Init(&ctx->ephemeralKey.mlkem, type, NULL, INVALID_DEVID);
-    if (rc != 0) {
-        return WOLFSPDM_E_CRYPTO_FAIL;
+    if (keyInit) {
+        wc_ecc_free(&verifyKey);
     }
-    rc = wc_MlKemKey_MakeKey(&ctx->ephemeralKey.mlkem, &ctx->rng);
-    if (rc != 0) {
-        wc_MlKemKey_Free(&ctx->ephemeralKey.mlkem);
-        return WOLFSPDM_E_CRYPTO_FAIL;
-    }
-    ctx->flags.ephemeralKeyInit = 1;
 
-    rc = wc_MlKemKey_PublicKeySize(&ctx->ephemeralKey.mlkem, &ekSz);
-    if (rc != 0) {
-        return WOLFSPDM_E_CRYPTO_FAIL;
-    }
-    if (ekSz > *ekOutSz) {
-        return WOLFSPDM_E_BUFFER_SMALL;
-    }
-    rc = wc_MlKemKey_EncodePublicKey(&ctx->ephemeralKey.mlkem, ekOut, ekSz);
-    if (rc != 0) {
-        return WOLFSPDM_E_CRYPTO_FAIL;
-    }
-    *ekOutSz = ekSz;
-
-    wolfSPDM_DebugPrint(ctx, "Generated ML-KEM ephemeral key (ek %u bytes)\n",
-        ekSz);
-    return WOLFSPDM_SUCCESS;
+    return (rc == 0) ? WOLFSPDM_SUCCESS : WOLFSPDM_E_BAD_SIGNATURE;
 }
 
-/* Decapsulate the responder's ciphertext c into ctx->sharedSecret (K'). */
-int wolfSPDM_MlKemDecapsulate(WOLFSPDM_CTX* ctx, const byte* ct, word32 ctSz)
-{
-    word32 ssSz;
-    int rc;
+/* ----- ECDSA Signing (P-384) ----- */
 
-    if (ctx == NULL || ct == NULL) {
+int wolfSPDM_SignHash(WOLFSPDM_CTX* ctx, const byte* hash, word32 hashSz,
+    byte* sig, word32* sigSz)
+{
+    ecc_key sigKey;
+    int rc;
+    int keyInit = 0;
+    byte derSig[ECC_MAX_SIG_SIZE];
+    word32 derSigSz = sizeof(derSig);
+    word32 rLen, sLen;
+
+    if (ctx == NULL || hash == NULL || sig == NULL || sigSz == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
-    if (!ctx->flags.ephemeralKeyInit ||
-        ctx->kexType != WOLFSPDM_KEX_MLKEM) {
+
+    if (!ctx->flags.hasReqKeyPair || ctx->reqPrivKeyLen == 0) {
+        wolfSPDM_DebugPrint(ctx, "No requester key pair for signing\n");
         return WOLFSPDM_E_BAD_STATE;
     }
 
-    rc = wc_MlKemKey_SharedSecretSize(&ctx->ephemeralKey.mlkem, &ssSz);
-    if (rc != 0 || ssSz > sizeof(ctx->sharedSecret)) {
-        return WOLFSPDM_E_CRYPTO_FAIL;
+    if (*sigSz < WOLFSPDM_ECC_POINT_SIZE) {
+        return WOLFSPDM_E_BUFFER_SMALL;
     }
-    rc = wc_MlKemKey_Decapsulate(&ctx->ephemeralKey.mlkem, ctx->sharedSecret,
-        ct, ctSz);
-    if (rc != 0) {
-        wolfSPDM_DebugPrint(ctx, "ML-KEM decapsulate failed: %d\n", rc);
-        return WOLFSPDM_E_CRYPTO_FAIL;
-    }
-    ctx->sharedSecretSz = ssSz;
 
-    wolfSPDM_DebugPrint(ctx, "ML-KEM shared secret derived (%u bytes)\n", ssSz);
-    return WOLFSPDM_SUCCESS;
+    rc = wc_ecc_init(&sigKey);
+    if (rc == 0) {
+        keyInit = 1;
+        rc = wc_ecc_import_unsigned(&sigKey,
+            ctx->reqPubKey,
+            ctx->reqPubKey + WOLFSPDM_ECC_KEY_SIZE,
+            ctx->reqPrivKey,
+            ECC_SECP384R1);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "wc_ecc_import_unsigned failed: %d\n", rc);
+        }
+    } else {
+        wolfSPDM_DebugPrint(ctx, "wc_ecc_init failed: %d\n", rc);
+    }
+    if (rc == 0) {
+        rc = wc_ecc_sign_hash(hash, hashSz, derSig, &derSigSz,
+            &ctx->rng, &sigKey);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "wc_ecc_sign_hash failed: %d\n", rc);
+        }
+    }
+    /* Convert DER signature to raw R||S format (96 bytes for P-384) */
+    if (rc == 0) {
+        rLen = WOLFSPDM_ECC_KEY_SIZE;
+        sLen = WOLFSPDM_ECC_KEY_SIZE;
+        rc = wc_ecc_sig_to_rs(derSig, derSigSz, sig, &rLen,
+                              sig + WOLFSPDM_ECC_KEY_SIZE, &sLen);
+        if (rc != 0) {
+            wolfSPDM_DebugPrint(ctx, "wc_ecc_sig_to_rs failed: %d\n", rc);
+        }
+    }
+    if (rc == 0) {
+        wolfSPDM_LeftPadToSize(sig, rLen, WOLFSPDM_ECC_KEY_SIZE);
+        wolfSPDM_LeftPadToSize(sig + WOLFSPDM_ECC_KEY_SIZE, sLen,
+            WOLFSPDM_ECC_KEY_SIZE);
+        *sigSz = WOLFSPDM_ECC_POINT_SIZE;
+        wolfSPDM_DebugPrint(ctx, "Signed hash with P-384 key (sig=%u bytes)\n",
+            *sigSz);
+    }
+
+    if (keyInit) {
+        wc_ecc_free(&sigKey);
+    }
+
+    return (rc == 0) ? WOLFSPDM_SUCCESS : WOLFSPDM_E_CRYPTO_FAIL;
 }
-#endif /* WOLFSPDM_HAVE_MLKEM */
+

@@ -52,7 +52,7 @@ jobs:
 
     - name: Configure
       run: |
-        ./configure --with-wolfssl=$HOME/wolfssl-install \
+        ./configure --with-wolfssl=$HOME/wolfssl-install --enable-nuvoton --enable-nations --enable-responder \
                     ${{ matrix.debug == 'yes' && '--enable-debug' || '' }} \
                     ${{ matrix.dynamic-mem == 'yes' && '--enable-dynamic-mem' || '' }}
 
@@ -73,21 +73,25 @@ jobs:
           test/*.log
           config.log
 
-  chunk-config:
-    name: chunking / ${{ matrix.variant }}
+  feature-config:
+    name: features / ${{ matrix.variant }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - variant: default
+          - variant: core
             configure: ''
-          - variant: disabled
-            configure: '--disable-chunking'
-          - variant: no-secured
-            configure: 'CPPFLAGS=-DWOLFSPDM_CHUNK_NO_SECURED'
-          - variant: small-mtu
-            configure: 'CPPFLAGS=-DWOLFSPDM_CHUNK_BUF_SIZE=1024'
+          - variant: tcg
+            configure: '--enable-tcg'
+          - variant: tcg-psk
+            configure: '--enable-tcg --enable-psk'
+          - variant: nuvoton
+            configure: '--enable-nuvoton'
+          - variant: nations
+            configure: '--enable-nations'
+          - variant: tcg-responder
+            configure: '--enable-tcg --enable-responder'
 
     steps:
     - uses: actions/checkout@v4
@@ -122,9 +126,6 @@ jobs:
 
     - name: Configure
       run: ./configure --with-wolfssl=$HOME/wolfssl-install ${{ matrix.configure }}
-
-    - name: Verify chunking status
-      run: grep -E 'Chunking:' config.log || true
 
     - name: Build
       run: make -j$(nproc)

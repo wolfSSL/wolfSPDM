@@ -71,14 +71,20 @@
 /* Enable dynamic memory allocation */
 #undef WOLFSPDM_DYNAMIC_MEMORY
 
-/* Disable SPDM message chunking */
-#undef WOLFSPDM_NO_CHUNK
+/* Enable Nations SPDM vendor commands */
+#undef WOLFSPDM_NATIONS
 
-/* Disable ML-DSA support */
-#undef WOLFSPDM_NO_MLDSA
+/* Enable Nuvoton SPDM vendor commands */
+#undef WOLFSPDM_NUVOTON
 
-/* Disable ML-KEM support */
-#undef WOLFSPDM_NO_MLKEM
+/* Enable SPDM PSK mode */
+#undef WOLFSPDM_PSK
+
+/* Enable the SPDM responder */
+#undef WOLFSPDM_RESPONDER
+
+/* Enable the TCG SPDM binding */
+#undef WOLFSPDM_TCG
 
 /* Define for Solaris 2.5.1 so the uint32_t typedef from <sys/synch.h>,
    <pthread.h>, or <semaphore.h> is not used. If the typedef were allowed, the

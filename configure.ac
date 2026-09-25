@@ -80,131 +80,66 @@ if test "x$enable_dynamic_mem" = "xyes"; then
     AC_DEFINE([WOLFSPDM_DYNAMIC_MEMORY], [1], [Enable dynamic memory allocation])
 fi
 
-# Large-response chunking (DSP0274 Sec. 10.27 CHUNK_GET). Default: enabled.
-# Lets the requester reassemble responses the responder splits because they
-# exceed DataTransferSize (needed for ML-DSA-87 over the wire).
-AC_ARG_ENABLE([chunking],
-    [AS_HELP_STRING([--disable-chunking], [Disable SPDM message chunking (CHUNK_GET)])],
-    [enable_chunking=$enableval],
-    [enable_chunking=yes])
+# TCG SPDM binding (TPM transport). Nuvoton/Nations imply it.
+AC_ARG_ENABLE([tcg],
+    [AS_HELP_STRING([--enable-tcg], [Enable the TCG SPDM binding (default: disabled)])],
+    [enable_tcg=$enableval],
+    [enable_tcg=no])
 
-if test "x$enable_chunking" = "xno"; then
-    AC_DEFINE([WOLFSPDM_NO_CHUNK], [1], [Disable SPDM message chunking])
-    chunking_status=disabled
-else
-    chunking_status=enabled
+AC_ARG_ENABLE([psk],
+    [AS_HELP_STRING([--enable-psk], [Enable SPDM PSK_EXCHANGE/PSK_FINISH (default: disabled)])],
+    [enable_psk=$enableval],
+    [enable_psk=no])
+
+AC_ARG_ENABLE([nuvoton],
+    [AS_HELP_STRING([--enable-nuvoton], [Enable Nuvoton NPCT75x SPDM vendor commands (default: disabled)])],
+    [enable_nuvoton=$enableval],
+    [enable_nuvoton=no])
+
+AC_ARG_ENABLE([nations],
+    [AS_HELP_STRING([--enable-nations], [Enable Nations NS350 SPDM vendor commands (default: disabled)])],
+    [enable_nations=$enableval],
+    [enable_nations=no])
+
+AC_ARG_ENABLE([responder],
+    [AS_HELP_STRING([--enable-responder], [Enable the SPDM responder (default: disabled)])],
+    [enable_responder=$enableval],
+    [enable_responder=no])
+
+if test "x$enable_nuvoton" = "xyes" || test "x$enable_nations" = "xyes"; then
+    enable_tcg=yes
+fi
+if test "x$enable_nations" = "xyes"; then
+    enable_psk=yes
+fi
+if test "x$enable_psk" = "xyes" && test "x$enable_tcg" != "xyes"; then
+    AC_MSG_ERROR([--enable-psk requires --enable-tcg (PSK handshake uses TCG SPDM binding framing)])
+fi
+if test "x$enable_responder" = "xyes" && test "x$enable_tcg" != "xyes"; then
+    AC_MSG_ERROR([--enable-responder requires --enable-tcg])
 fi
 
-# ML-DSA (FIPS 204) post-quantum signatures (DSP0274 1.4). Default: auto-follow
-# the linked wolfSSL - on when it reports WOLFSSL_HAVE_MLDSA, off otherwise.
-AC_ARG_ENABLE([mldsa],
-    [AS_HELP_STRING([--disable-mldsa], [Disable ML-DSA support even if wolfSSL has it])],
-    [enable_mldsa=$enableval],
-    [enable_mldsa=auto])
-
-AC_MSG_CHECKING([whether wolfSSL provides ML-DSA])
-AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
-    #include <wolfssl/options.h>
-    #include <wolfssl/wolfcrypt/settings.h>
-    #ifndef WOLFSSL_HAVE_MLDSA
-    #error "no mldsa"
-    #endif
-    int main(void) { return 0; }
-]])],
-[have_wolfssl_mldsa=yes],
-[have_wolfssl_mldsa=no])
-AC_MSG_RESULT([$have_wolfssl_mldsa])
-
-# wolfSPDM uses the context-based wc_MlDsaKey_* verification API (FIPS 204
-# ML-DSA.Verify with a context). That API lands post-v5.9.1-stable; older
-# wolfSSL releases ship only the legacy ML-DSA interface and report the same
-# LIBWOLFSSL_VERSION_HEX as wolfSSL master, so we capability-test for the API
-# instead of gating on a version number.
-have_mldsa_api=no
-if test "x$enable_mldsa" != "xno" && test "x$have_wolfssl_mldsa" = "xyes"; then
-    AC_MSG_CHECKING([for the wc_MlDsaKey context API])
-    AC_LINK_IFELSE([AC_LANG_PROGRAM([[
-        #include <wolfssl/options.h>
-        #include <wolfssl/wolfcrypt/settings.h>
-        #include <wolfssl/wolfcrypt/wc_mldsa.h>
-    ]], [[
-        MlDsaKey k; int res = 0; word32 idx = 0;
-        (void)wc_MlDsaKey_VerifyCtx(&k, 0, 0, 0, 0, 0, 0, &res);
-        (void)wc_MlDsaKey_PublicKeyDecode(&k, 0, 0, &idx);
-    ]])],
-    [have_mldsa_api=yes],
-    [have_mldsa_api=no])
-    AC_MSG_RESULT([$have_mldsa_api])
+if test "x$enable_tcg" = "xyes"; then
+    AC_DEFINE([WOLFSPDM_TCG], [1], [Enable the TCG SPDM binding])
+fi
+if test "x$enable_psk" = "xyes"; then
+    AC_DEFINE([WOLFSPDM_PSK], [1], [Enable SPDM PSK mode])
+fi
+if test "x$enable_nuvoton" = "xyes"; then
+    AC_DEFINE([WOLFSPDM_NUVOTON], [1], [Enable Nuvoton SPDM vendor commands])
+fi
+if test "x$enable_nations" = "xyes"; then
+    AC_DEFINE([WOLFSPDM_NATIONS], [1], [Enable Nations SPDM vendor commands])
+fi
+if test "x$enable_responder" = "xyes"; then
+    AC_DEFINE([WOLFSPDM_RESPONDER], [1], [Enable the SPDM responder])
 fi
 
-if test "x$enable_mldsa" = "xno"; then
-    AC_DEFINE([WOLFSPDM_NO_MLDSA], [1], [Disable ML-DSA support])
-    mldsa_status=disabled
-elif test "x$have_mldsa_api" = "xyes"; then
-    mldsa_status=enabled
-elif test "x$enable_mldsa" = "xyes"; then
-    AC_MSG_ERROR([--enable-mldsa requires a wolfSSL with the wc_MlDsaKey context API (wolfSSL master or a release that ships it, built with --enable-mldsa). Use --disable-mldsa or update wolfSSL.])
-else
-    AC_DEFINE([WOLFSPDM_NO_MLDSA], [1], [Disable ML-DSA support])
-    mldsa_status=disabled
-fi
-
-# ML-KEM (FIPS 203) post-quantum key exchange (DSP0274 1.4). Default: auto-follow
-# the linked wolfSSL - on when it reports WOLFSSL_HAVE_MLKEM, off otherwise.
-AC_ARG_ENABLE([mlkem],
-    [AS_HELP_STRING([--disable-mlkem], [Disable ML-KEM support even if wolfSSL has it])],
-    [enable_mlkem=$enableval],
-    [enable_mlkem=auto])
-
-AC_MSG_CHECKING([whether wolfSSL provides ML-KEM])
-AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
-    #include <wolfssl/options.h>
-    #include <wolfssl/wolfcrypt/settings.h>
-    #ifndef WOLFSSL_HAVE_MLKEM
-    #error "no mlkem"
-    #endif
-    int main(void) { return 0; }
-]])],
-[have_wolfssl_mlkem=yes],
-[have_wolfssl_mlkem=no])
-AC_MSG_RESULT([$have_wolfssl_mlkem])
-
-# wolfSPDM uses the wc_MlKemKey_* API (keygen, encapsulation-key encode, and
-# decapsulation). Capability-test for it rather than gating on a version number.
-have_mlkem_api=no
-if test "x$enable_mlkem" != "xno" && test "x$have_wolfssl_mlkem" = "xyes"; then
-    AC_MSG_CHECKING([for the wc_MlKemKey API])
-    AC_LINK_IFELSE([AC_LANG_PROGRAM([[
-        #include <wolfssl/options.h>
-        #include <wolfssl/wolfcrypt/settings.h>
-        #include <wolfssl/wolfcrypt/wc_mlkem.h>
-    ]], [[
-        MlKemKey k; word32 len = 0;
-        (void)wc_MlKemKey_Init(&k, 0, 0, 0);
-        (void)wc_MlKemKey_MakeKey(&k, 0);
-        (void)wc_MlKemKey_EncodePublicKey(&k, 0, 0);
-        (void)wc_MlKemKey_PublicKeySize(&k, &len);
-        (void)wc_MlKemKey_CipherTextSize(&k, &len);
-        (void)wc_MlKemKey_SharedSecretSize(&k, &len);
-        (void)wc_MlKemKey_Decapsulate(&k, 0, 0, 0);
-        (void)wc_MlKemKey_Free(&k);
-    ]])],
-    [have_mlkem_api=yes],
-    [have_mlkem_api=no])
-    AC_MSG_RESULT([$have_mlkem_api])
-fi
-
-if test "x$enable_mlkem" = "xno"; then
-    AC_DEFINE([WOLFSPDM_NO_MLKEM], [1], [Disable ML-KEM support])
-    mlkem_status=disabled
-elif test "x$have_mlkem_api" = "xyes"; then
-    mlkem_status=enabled
-elif test "x$enable_mlkem" = "xyes"; then
-    AC_MSG_ERROR([--enable-mlkem requires a wolfSSL with the wc_MlKemKey API, built with --enable-mlkem. Use --disable-mlkem or update wolfSSL.])
-else
-    AC_DEFINE([WOLFSPDM_NO_MLKEM], [1], [Disable ML-KEM support])
-    mlkem_status=disabled
-fi
+AM_CONDITIONAL([BUILD_TCG], [test "x$enable_tcg" = "xyes"])
+AM_CONDITIONAL([BUILD_PSK], [test "x$enable_psk" = "xyes"])
+AM_CONDITIONAL([BUILD_NUVOTON], [test "x$enable_nuvoton" = "xyes"])
+AM_CONDITIONAL([BUILD_NATIONS], [test "x$enable_nations" = "xyes"])
+AM_CONDITIONAL([BUILD_RESPONDER], [test "x$enable_responder" = "xyes"])
 
 # Output files
 AC_CONFIG_FILES([Makefile wolfspdm.pc])
@@ -215,8 +150,10 @@ echo "wolfSPDM configuration summary:"
 echo "  Version:     $PACKAGE_VERSION"
 echo "  Debug:       $enable_debug"
 echo "  Dynamic mem: $enable_dynamic_mem"
-echo "  Chunking:    $chunking_status"
-echo "  ML-DSA:      $mldsa_status"
-echo "  ML-KEM:      $mlkem_status"
+echo "  TCG:         $enable_tcg"
+echo "  PSK:         $enable_psk"
+echo "  Nuvoton:     $enable_nuvoton"
+echo "  Nations:     $enable_nations"
+echo "  Responder:   $enable_responder"
 echo "  wolfSSL:     ${WOLFSSL_DIR:-system}"
 echo ""

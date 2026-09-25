@@ -1,6 +1,6 @@
 /* spdm_transcript.c
  *
- * Copyright (C) 2006-2025 wolfSSL Inc.
+ * Copyright (C) 2006-2026 wolfSSL Inc.
  *
  * This file is part of wolfSPDM.
  *
@@ -19,9 +19,13 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
+#ifdef HAVE_CONFIG_H
+    #include <config.h>
+#endif
+
 #include "spdm_internal.h"
 
-/* --- Transcript Management ---
+/* ----- Transcript Management -----
  * VCA = GET_VERSION || VERSION || GET_CAPS || CAPS || NEG_ALGO || ALGO
  * Ct  = Hash(certificate_chain)
  * TH1 = Hash(VCA || Ct || KEY_EXCHANGE || KEY_EXCHANGE_RSP_partial || Signature)
@@ -36,11 +40,9 @@ void wolfSPDM_TranscriptReset(WOLFSPDM_CTX* ctx)
     XMEMSET(ctx->transcript, 0, sizeof(ctx->transcript));
     ctx->transcriptLen = 0;
 
-    XMEMSET(ctx->certChain, 0, sizeof(ctx->certChain));
-    ctx->certChainLen = 0;
-
     XMEMSET(ctx->certChainHash, 0, sizeof(ctx->certChainHash));
     XMEMSET(ctx->th1, 0, sizeof(ctx->th1));
+    XMEMSET(ctx->th2, 0, sizeof(ctx->th2));
 }
 
 int wolfSPDM_TranscriptAdd(WOLFSPDM_CTX* ctx, const byte* data, word32 len)
@@ -49,7 +51,8 @@ int wolfSPDM_TranscriptAdd(WOLFSPDM_CTX* ctx, const byte* data, word32 len)
         return WOLFSPDM_E_INVALID_ARG;
     }
 
-    if (ctx->transcriptLen + len > WOLFSPDM_MAX_TRANSCRIPT) {
+    if (ctx->transcriptLen > WOLFSPDM_MAX_TRANSCRIPT ||
+        len > WOLFSPDM_MAX_TRANSCRIPT - ctx->transcriptLen) {
         return WOLFSPDM_E_BUFFER_SMALL;
     }
 
@@ -58,22 +61,6 @@ int wolfSPDM_TranscriptAdd(WOLFSPDM_CTX* ctx, const byte* data, word32 len)
 
     wolfSPDM_DebugPrint(ctx, "Transcript: added %u bytes, total=%u\n",
         len, ctx->transcriptLen);
-
-    return WOLFSPDM_SUCCESS;
-}
-
-int wolfSPDM_CertChainAdd(WOLFSPDM_CTX* ctx, const byte* data, word32 len)
-{
-    if (ctx == NULL || data == NULL) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-
-    if (ctx->certChainLen + len > WOLFSPDM_MAX_CERT_CHAIN) {
-        return WOLFSPDM_E_BUFFER_SMALL;
-    }
-
-    XMEMCPY(ctx->certChain + ctx->certChainLen, data, len);
-    ctx->certChainLen += len;
 
     return WOLFSPDM_SUCCESS;
 }
@@ -114,17 +101,3 @@ int wolfSPDM_TranscriptHash(WOLFSPDM_CTX* ctx, byte* hash)
         NULL, 0, NULL, 0);
 }
 
-int wolfSPDM_ComputeCertChainHash(WOLFSPDM_CTX* ctx)
-{
-    if (ctx == NULL) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-    if (ctx->certChainLen == 0) {
-        XMEMSET(ctx->certChainHash, 0, sizeof(ctx->certChainHash));
-        return WOLFSPDM_SUCCESS;
-    }
-
-    wolfSPDM_DebugPrint(ctx, "Ct = Hash(cert_chain[%u])\n", ctx->certChainLen);
-    return wolfSPDM_Sha384Hash(ctx->certChainHash,
-        ctx->certChain, ctx->certChainLen, NULL, 0, NULL, 0);
-}

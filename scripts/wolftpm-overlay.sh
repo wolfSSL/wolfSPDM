@@ -1,6 +1,7 @@
 #!/bin/sh
-# Replace a wolfTPM checkout's embedded SPDM sources with this wolfSPDM tree
-# so wolfTPM's own SPDM tests run against it.
+# Replace a wolfTPM checkout's embedded SPDM sources with this wolfSPDM tree.
+# wolfTPM keeps its own src/spdm/unit_test.c, so its regression tests run
+# against this code.
 set -e
 
 usage() {
@@ -20,7 +21,6 @@ SPDM=$(cd "$(dirname "$0")/.." && pwd)
 rm -f "$TPM"/src/spdm/spdm_*.c "$TPM"/src/spdm/spdm_internal.h
 cp "$SPDM"/src/spdm_*.c "$SPDM"/src/vendor/spdm_*.c \
    "$SPDM"/src/spdm_internal.h "$TPM"/src/spdm/
-cp "$SPDM"/test/unit_test.c "$TPM"/src/spdm/unit_test.c
 
 mkdir -p "$TPM"/wolfspdm
 cp "$SPDM"/wolfspdm/spdm*.h "$TPM"/wolfspdm/

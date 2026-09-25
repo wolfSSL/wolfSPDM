@@ -48,6 +48,7 @@ jobs:
                  --error-exitcode=1 \
                  --suppress=missingIncludeSystem \
                  --suppress=constParameterPointer \
+                 --suppress=constParameterCallback \
                  --suppress=knownConditionTrueFalse \
                  --inline-suppr \
                  -I wolfspdm -I src -I $HOME/wolfssl-install/include \

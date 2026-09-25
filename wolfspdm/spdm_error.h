@@ -53,6 +53,10 @@ enum WOLFSPDM_ERROR {
                                          * TPM2 sent while SPDM mode active -
                                          * bus-snooping defence) */
     WOLFSPDM_E_NOT_IMPL         = -20,  /* Handler not yet implemented */
+    WOLFSPDM_E_CERT_FAIL        = -21,  /* Certificate retrieval or chain check failed */
+    WOLFSPDM_E_CAPS_MISMATCH    = -22,  /* Capability negotiation failed */
+    WOLFSPDM_E_ALGO_MISMATCH    = -23,  /* Algorithm negotiation failed */
+    WOLFSPDM_E_CERT_PARSE       = -24,  /* Certificate could not be parsed */
 };
 
 /* Get human-readable error string */

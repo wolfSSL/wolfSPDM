@@ -110,6 +110,17 @@ WOLFSPDM_API int wolfSPDM_SetResponderPubKey(WOLFSPDM_CTX* ctx,
 WOLFSPDM_API int wolfSPDM_SetRequesterKeyPair(WOLFSPDM_CTX* ctx,
     const byte* privKey, word32 privKeySz,
     const byte* pubKey, word32 pubKeySz);
+/* Cap the negotiated version (0x12-0x14, 0 = build default) */
+WOLFSPDM_API int wolfSPDM_SetMaxVersion(WOLFSPDM_CTX* ctx, byte maxVersion);
+
+#ifndef WOLFSPDM_NO_CERT
+/* Standard (certificate) mode, used by Connect when no vendor mode is set.
+ * The trust anchor is one root CA (DER), a pinned responder key, or an
+ * explicit opt-in to untrusted certificates. */
+WOLFSPDM_API int wolfSPDM_SetTrustedCAs(WOLFSPDM_CTX* ctx,
+    const byte* derCerts, word32 derCertsSz);
+WOLFSPDM_API int wolfSPDM_AllowUntrustedCerts(WOLFSPDM_CTX* ctx, int allow);
+#endif
 
 /* Session establishment */
 WOLFSPDM_API int wolfSPDM_Connect(WOLFSPDM_CTX* ctx);
@@ -118,6 +129,12 @@ WOLFSPDM_API int wolfSPDM_Disconnect(WOLFSPDM_CTX* ctx);
 
 /* Individual handshake steps (for fine-grained control) */
 WOLFSPDM_API int wolfSPDM_GetVersion(WOLFSPDM_CTX* ctx);
+#ifndef WOLFSPDM_NO_CERT
+WOLFSPDM_API int wolfSPDM_GetCapabilities(WOLFSPDM_CTX* ctx);
+WOLFSPDM_API int wolfSPDM_NegotiateAlgorithms(WOLFSPDM_CTX* ctx);
+WOLFSPDM_API int wolfSPDM_GetDigests(WOLFSPDM_CTX* ctx);
+WOLFSPDM_API int wolfSPDM_GetCertificate(WOLFSPDM_CTX* ctx, int slotId);
+#endif
 WOLFSPDM_API int wolfSPDM_KeyExchange(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API int wolfSPDM_Finish(WOLFSPDM_CTX* ctx);
 
@@ -129,6 +146,8 @@ WOLFSPDM_API int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
 /* Session info */
 WOLFSPDM_API word32 wolfSPDM_GetSessionId(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API byte wolfSPDM_GetNegotiatedVersion(WOLFSPDM_CTX* ctx);
+/* Param1 of the last SPDM ERROR from the responder, 0 if none */
+WOLFSPDM_API byte wolfSPDM_GetLastPeerError(WOLFSPDM_CTX* ctx);
 #ifdef WOLFSPDM_TCG
 WOLFSPDM_API word32 wolfSPDM_GetConnectionHandle(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API word16 wolfSPDM_GetFipsIndicator(WOLFSPDM_CTX* ctx);

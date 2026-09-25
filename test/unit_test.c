@@ -28,6 +28,9 @@
     #include <wolfspdm/spdm_responder.h>
 #endif
 #include "spdm_internal.h"
+#ifndef WOLFSPDM_NO_CERT
+    #include "test_certs.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -467,9 +470,16 @@ static int test_session_state(void)
     ASSERT_EQ(wolfSPDM_IsConnected(ctx), 0, "Should not be connected");
     ASSERT_EQ(wolfSPDM_GetSessionId(ctx), 0, "SessionId should be 0");
 
+    /* The ID is visible from KEY_EXCHANGE on, but not after an error */
+    ctx->sessionId = 0xAABBCCDD;
+    ctx->state = WOLFSPDM_STATE_KEY_EX;
+    ASSERT_EQ(wolfSPDM_GetSessionId(ctx), (word32)0xAABBCCDD,
+        "SessionId must be visible before FINISH");
+    ctx->state = WOLFSPDM_STATE_ERROR;
+    ASSERT_EQ(wolfSPDM_GetSessionId(ctx), 0, "SessionId hidden on error");
+
     /* Simulate connected state */
     ctx->state = WOLFSPDM_STATE_CONNECTED;
-    ctx->sessionId = 0xAABBCCDD;
     ctx->spdmVersion = SPDM_VERSION_12;
     ASSERT_EQ(wolfSPDM_IsConnected(ctx), 1, "Should be connected");
     ASSERT_EQ(wolfSPDM_GetSessionId(ctx), (word32)0xAABBCCDD, "SessionId wrong");
@@ -2869,6 +2879,231 @@ static int test_responder_psk_roundtrip(void)
 
 /* ----- Main ----- */
 
+#ifndef WOLFSPDM_NO_CERT
+/* ----- Standard (certificate) requester ----- */
+
+static int test_parse_capabilities(void)
+{
+    byte rsp[20];
+    TEST_CTX_SETUP_V12();
+    printf("test_parse_capabilities...\n");
+
+    XMEMSET(rsp, 0, sizeof(rsp));
+    rsp[0] = SPDM_VERSION_12;
+    rsp[1] = SPDM_CAPABILITIES;
+    SPDM_Set32LE(&rsp[8], SPDM_CAP_CERT_CAP | SPDM_CAP_ENCRYPT_CAP |
+        SPDM_CAP_MAC_CAP | SPDM_CAP_KEY_EX_CAP);
+    SPDM_Set32LE(&rsp[12], 1024);
+    SPDM_Set32LE(&rsp[16], 4096);
+    ASSERT_SUCCESS(wolfSPDM_ParseCapabilities(ctx, rsp, sizeof(rsp)));
+    ASSERT_EQ(ctx->dataTransferSize, (word32)1024, "DataTransferSize");
+
+    /* Responder without KEY_EX_CAP cannot open a session */
+    SPDM_Set32LE(&rsp[8], SPDM_CAP_CERT_CAP | SPDM_CAP_ENCRYPT_CAP |
+        SPDM_CAP_MAC_CAP);
+    ASSERT_EQ(wolfSPDM_ParseCapabilities(ctx, rsp, sizeof(rsp)),
+        WOLFSPDM_E_CAPS_MISMATCH, "missing KEY_EX_CAP must fail");
+
+    /* DataTransferSize below the DSP0274 minimum of 42 */
+    SPDM_Set32LE(&rsp[8], SPDM_CAP_CERT_CAP | SPDM_CAP_ENCRYPT_CAP |
+        SPDM_CAP_MAC_CAP | SPDM_CAP_KEY_EX_CAP);
+    SPDM_Set32LE(&rsp[12], 41);
+    ASSERT_EQ(wolfSPDM_ParseCapabilities(ctx, rsp, sizeof(rsp)),
+        WOLFSPDM_E_CAPS_MISMATCH, "DataTransferSize < 42 must fail");
+
+    /* Version must echo the negotiated version */
+    SPDM_Set32LE(&rsp[12], 1024);
+    rsp[0] = SPDM_VERSION_13;
+    ASSERT_EQ(wolfSPDM_ParseCapabilities(ctx, rsp, sizeof(rsp)),
+        WOLFSPDM_E_CAPS_MISMATCH, "version mismatch must fail");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
+static int test_negotiate_algorithms_roundtrip(void)
+{
+    byte req[48];
+    byte rsp[52];
+    word32 reqSz = sizeof(req);
+    TEST_CTX_SETUP_V12();
+    printf("test_negotiate_algorithms_roundtrip...\n");
+
+    ASSERT_SUCCESS(wolfSPDM_BuildNegotiateAlgorithms(ctx, req, &reqSz));
+    ASSERT_EQ(reqSz, (word32)48, "NEGOTIATE_ALGORITHMS size");
+
+    /* Algorithm Set B selection with DHE, AEAD, ReqBaseAsym, KeySchedule */
+    XMEMSET(rsp, 0, sizeof(rsp));
+    rsp[0] = SPDM_VERSION_12;
+    rsp[1] = SPDM_ALGORITHMS;
+    rsp[2] = 4;
+    SPDM_Set16LE(&rsp[4], sizeof(rsp));
+    rsp[6] = 0x01;
+    rsp[7] = 0x02;
+    SPDM_Set32LE(&rsp[12], SPDM_ASYM_ALGO_ECDSA_P384);
+    SPDM_Set32LE(&rsp[16], SPDM_HASH_ALGO_SHA_384);
+    XMEMCPY(&rsp[36], &req[32], 16);
+    ASSERT_SUCCESS(wolfSPDM_ParseAlgorithms(ctx, rsp, sizeof(rsp)));
+
+    /* Declared Length must equal the received size */
+    SPDM_Set16LE(&rsp[4], sizeof(rsp) - 1);
+    ASSERT_EQ(wolfSPDM_ParseAlgorithms(ctx, rsp, sizeof(rsp)),
+        WOLFSPDM_E_ALGO_MISMATCH, "Length mismatch must fail");
+    SPDM_Set16LE(&rsp[4], sizeof(rsp));
+
+    /* A responder that selects a different AEAD is rejected */
+    SPDM_Set16LE(&rsp[42], 0x0001);
+    ASSERT_EQ(wolfSPDM_ParseAlgorithms(ctx, rsp, sizeof(rsp)),
+        WOLFSPDM_E_ALGO_MISMATCH, "non Set B AEAD must fail");
+    SPDM_Set16LE(&rsp[42], SPDM_AEAD_ALGO_AES_256_GCM);
+
+    /* AlgStruct count past the end of the response */
+    rsp[2] = 5;
+    ASSERT_EQ(wolfSPDM_ParseAlgorithms(ctx, rsp, sizeof(rsp)),
+        WOLFSPDM_E_ALGO_MISMATCH, "truncated AlgStructs must fail");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
+static int test_parse_certificate(void)
+{
+    byte rsp[8 + 16];
+    word16 portion = 0;
+    word16 remainder = 0;
+    TEST_CTX_SETUP_V12();
+    printf("test_parse_certificate...\n");
+
+    XMEMSET(rsp, 0xA5, sizeof(rsp));
+    rsp[0] = SPDM_VERSION_12;
+    rsp[1] = SPDM_CERTIFICATE;
+    rsp[2] = 0;
+    rsp[3] = 0;
+    SPDM_Set16LE(&rsp[4], 16);
+    SPDM_Set16LE(&rsp[6], 100);
+    ctx->currentSlotId = 0;
+    ASSERT_SUCCESS(wolfSPDM_ParseCertificate(ctx, rsp, sizeof(rsp),
+        &portion, &remainder));
+    ASSERT_EQ(portion, 16, "portion length");
+    ASSERT_EQ(remainder, 100, "remainder length");
+    ASSERT_EQ(ctx->certChainLen, (word32)16, "chain grew by portion");
+
+    /* Slot echo must match the requested slot */
+    ctx->currentSlotId = 1;
+    ASSERT_EQ(wolfSPDM_ParseCertificate(ctx, rsp, sizeof(rsp), &portion,
+        &remainder), WOLFSPDM_E_CERT_FAIL, "slot echo mismatch must fail");
+
+    /* Portion longer than the received data */
+    ctx->currentSlotId = 0;
+    SPDM_Set16LE(&rsp[4], 17);
+    ASSERT_EQ(wolfSPDM_ParseCertificate(ctx, rsp, sizeof(rsp), &portion,
+        &remainder), WOLFSPDM_E_BUFFER_SMALL, "truncated portion must fail");
+
+    /* Chain buffer cannot overflow */
+    SPDM_Set16LE(&rsp[4], 16);
+    ctx->certChainLen = WOLFSPDM_MAX_CERT_CHAIN - 8;
+    ASSERT_EQ(wolfSPDM_ParseCertificate(ctx, rsp, sizeof(rsp), &portion,
+        &remainder), WOLFSPDM_E_BUFFER_SMALL, "chain overflow must fail");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
+static int test_mutual_auth_rejected_in_standard_mode(void)
+{
+    byte rsp[282];
+    TEST_CTX_SETUP_V12();
+    printf("test_mutual_auth_rejected_in_standard_mode...\n");
+
+    XMEMSET(rsp, 0, sizeof(rsp));
+    rsp[0] = SPDM_VERSION_12;
+    rsp[1] = SPDM_KEY_EXCHANGE_RSP;
+    rsp[6] = 0x01;  /* MutAuthRequested */
+    ASSERT_EQ(wolfSPDM_ParseKeyExchangeRsp(ctx, rsp, sizeof(rsp)),
+        WOLFSPDM_E_KEY_EXCHANGE, "standard mode must reject MutAuth");
+    ASSERT_EQ(ctx->sessionId, (word32)0, "no session state committed");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+/* SPDM cert chain from the sample: header, RootHash(root), certificates */
+static int test_load_sample_chain(WOLFSPDM_CTX* ctx)
+{
+    word32 total = WOLFSPDM_CERT_CHAIN_HDR_SZ +
+        (word32)sizeof(test_rsp_chain_der);
+
+    if (total > WOLFSPDM_MAX_CERT_CHAIN) {
+        return -1;
+    }
+    SPDM_Set16LE(ctx->certChain, (word16)total);
+    ctx->certChain[2] = 0;
+    ctx->certChain[3] = 0;
+    if (wolfSPDM_Sha384Hash(ctx->certChain + 4, test_ca_cert_der,
+            sizeof(test_ca_cert_der), NULL, 0, NULL, 0) != 0) {
+        return -1;
+    }
+    XMEMCPY(ctx->certChain + WOLFSPDM_CERT_CHAIN_HDR_SZ, test_rsp_chain_der,
+        sizeof(test_rsp_chain_der));
+    ctx->certChainLen = total;
+    return 0;
+}
+
+static int test_validate_cert_chain(void)
+{
+    byte leafKey[WOLFSPDM_ECC_POINT_SIZE];
+    TEST_CTX_SETUP_V12();
+    printf("test_validate_cert_chain...\n");
+
+    /* No trust anchor: refused */
+    ASSERT_SUCCESS(test_load_sample_chain(ctx));
+    ASSERT_EQ(wolfSPDM_ValidateCertChain(ctx), WOLFSPDM_E_CERT_FAIL,
+        "chain without a trust anchor must fail");
+
+    /* Root CA anchor: every signature verifies, leaf key installed */
+    ASSERT_SUCCESS(wolfSPDM_SetTrustedCAs(ctx, test_ca_cert_der,
+        sizeof(test_ca_cert_der)));
+    ASSERT_SUCCESS(wolfSPDM_ValidateCertChain(ctx));
+    ASSERT_EQ(ctx->flags.hasRspPubKey, 1, "leaf key installed");
+    ASSERT_EQ(ctx->flags.rspKeyFromCert, 1, "key marked as cert derived");
+    XMEMCPY(leafKey, ctx->rspPubKey, sizeof(leafKey));
+
+    /* A forged leaf signature breaks the chain */
+    ctx->certChain[ctx->certChainLen - 2] ^= 0x01;
+    ASSERT_EQ(wolfSPDM_ValidateCertChain(ctx), WOLFSPDM_E_CERT_FAIL,
+        "forged leaf signature must fail");
+    ctx->certChain[ctx->certChainLen - 2] ^= 0x01;
+
+    /* RootHash naming another root is refused */
+    ctx->certChain[4] ^= 0x01;
+    ASSERT_EQ(wolfSPDM_ValidateCertChain(ctx), WOLFSPDM_E_CERT_FAIL,
+        "RootHash mismatch must fail");
+    TEST_CTX_FREE();
+
+    /* A pinned responder key anchors the chain without a root CA */
+    wolfSPDM_Init(ctx);
+    ctx->spdmVersion = SPDM_VERSION_12;
+    ASSERT_SUCCESS(test_load_sample_chain(ctx));
+    ASSERT_SUCCESS(wolfSPDM_SetResponderPubKey(ctx, leafKey,
+        sizeof(leafKey)));
+    ASSERT_SUCCESS(wolfSPDM_ValidateCertChain(ctx));
+    ASSERT_EQ(ctx->flags.rspKeyFromCert, 0, "pinned key stays the anchor");
+    ctx->rspPubKey[10] ^= 0x01;
+    ASSERT_EQ(wolfSPDM_ValidateCertChain(ctx), WOLFSPDM_E_CERT_FAIL,
+        "leaf not matching the pinned key must fail");
+    TEST_CTX_FREE();
+
+    /* Explicit opt-in accepts an unanchored chain */
+    wolfSPDM_Init(ctx);
+    ctx->spdmVersion = SPDM_VERSION_12;
+    ASSERT_SUCCESS(test_load_sample_chain(ctx));
+    ASSERT_SUCCESS(wolfSPDM_AllowUntrustedCerts(ctx, 1));
+    ASSERT_SUCCESS(wolfSPDM_ValidateCertChain(ctx));
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+#endif /* !WOLFSPDM_NO_CERT */
+
 int main(void)
 {
     printf("===========================================\n");
@@ -3001,6 +3236,13 @@ int main(void)
     test_encrypt_internal_null_args();
     test_encrypt_decrypt_roundtrip();
     test_decrypt_rejects_wrong_mctp_type();
+#ifndef WOLFSPDM_NO_CERT
+    test_parse_capabilities();
+    test_negotiate_algorithms_roundtrip();
+    test_parse_certificate();
+    test_mutual_auth_rejected_in_standard_mode();
+    test_validate_cert_chain();
+#endif
 #ifdef WOLFSPDM_TCG
     test_encrypt_decrypt_roundtrip_tcg();
 #endif

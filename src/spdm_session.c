@@ -25,12 +25,8 @@
 
 #include "spdm_internal.h"
 
-/* Callback types for build/parse functions */
-typedef int (*wolfSPDM_BuildFn)(WOLFSPDM_CTX*, byte*, word32*);
-typedef int (*wolfSPDM_ParseFn)(WOLFSPDM_CTX*, const byte*, word32);
-
 /* Exchange helper: build -> transcript(tx) -> sendrecv -> transcript(rx) -> parse */
-static int wolfSPDM_ExchangeMsg(WOLFSPDM_CTX* ctx,
+int wolfSPDM_ExchangeMsg(WOLFSPDM_CTX* ctx,
     wolfSPDM_BuildFn buildFn, wolfSPDM_ParseFn parseFn,
     byte* txBuf, word32 txBufSz, byte* rxBuf, word32 rxBufSz)
 {

@@ -126,6 +126,7 @@ struct WOLFSPDM_CTX {
     /* Negotiated parameters */
     byte maxVersion;            /* Runtime max version cap (0 = use compile-time default) */
     byte spdmVersion;           /* Negotiated SPDM version */
+    byte lastPeerErrorCode;     /* Last SPDM ERROR Param1 (0 = none) */
 
     /* Ephemeral ECDHE key (generated for KEY_EXCHANGE) */
     ecc_key ephemeralKey;
@@ -178,6 +179,19 @@ struct WOLFSPDM_CTX {
     word32 reqPrivKeyLen;
     byte reqPubKey[WOLFSPDM_ECC_POINT_SIZE];
 
+#ifndef WOLFSPDM_NO_CERT
+    /* Standard requester: negotiated limits and responder cert chain */
+    word32 rspCaps;
+    word32 dataTransferSize;
+    word32 maxSpdmMsgSize;
+    word32 certChainLen;
+    word32 trustedCASz;
+    byte   slotMask;
+    byte   currentSlotId;
+    byte   certChain[WOLFSPDM_MAX_CERT_CHAIN];
+    byte   trustedCA[WOLFSPDM_MAX_TRUSTED_CA];
+#endif
+
     /* Boolean flag bit field (at end for better struct packing) */
     struct {
         unsigned int debug              : 1;
@@ -187,6 +201,10 @@ struct WOLFSPDM_CTX {
         unsigned int ephemeralKeyInit   : 1;
         unsigned int hasRspPubKey       : 1;
         unsigned int hasReqKeyPair      : 1;
+#ifndef WOLFSPDM_NO_CERT
+        unsigned int allowUntrustedCert : 1;
+        unsigned int rspKeyFromCert     : 1;
+#endif
     } flags;
 };
 
@@ -297,6 +315,7 @@ static WC_INLINE void wolfSPDM_BuildIV(byte* iv, const byte* baseIv,
         if ((buf)[1] != (expected)) { \
             int _ec; \
             if (wolfSPDM_CheckError((buf), (bufSz), &_ec)) { \
+                (ctx)->lastPeerErrorCode = (byte)_ec; \
                 wolfSPDM_DebugPrint((ctx), "SPDM error: 0x%02x\n", _ec); \
                 return WOLFSPDM_E_PEER_ERROR; \
             } \
@@ -372,6 +391,31 @@ WOLFSPDM_API int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
     byte* plain, word32* plainSz);
 
 /* ----- Internal Utility Functions ----- */
+
+typedef int (*wolfSPDM_BuildFn)(WOLFSPDM_CTX*, byte*, word32*);
+typedef int (*wolfSPDM_ParseFn)(WOLFSPDM_CTX*, const byte*, word32);
+
+/* build -> transcript(tx) -> send/receive -> transcript(rx) -> parse */
+WOLFSPDM_LOCAL int wolfSPDM_ExchangeMsg(WOLFSPDM_CTX* ctx,
+    wolfSPDM_BuildFn buildFn, wolfSPDM_ParseFn parseFn,
+    byte* txBuf, word32 txBufSz, byte* rxBuf, word32 rxBufSz);
+
+#ifndef WOLFSPDM_NO_CERT
+WOLFSPDM_TEST_API int wolfSPDM_BuildGetCapabilities(WOLFSPDM_CTX* ctx,
+    byte* buf, word32* bufSz);
+WOLFSPDM_TEST_API int wolfSPDM_ParseCapabilities(WOLFSPDM_CTX* ctx,
+    const byte* buf, word32 bufSz);
+WOLFSPDM_TEST_API int wolfSPDM_BuildNegotiateAlgorithms(WOLFSPDM_CTX* ctx,
+    byte* buf, word32* bufSz);
+WOLFSPDM_TEST_API int wolfSPDM_ParseAlgorithms(WOLFSPDM_CTX* ctx,
+    const byte* buf, word32 bufSz);
+WOLFSPDM_TEST_API int wolfSPDM_ParseDigests(WOLFSPDM_CTX* ctx,
+    const byte* buf, word32 bufSz);
+WOLFSPDM_TEST_API int wolfSPDM_ParseCertificate(WOLFSPDM_CTX* ctx,
+    const byte* buf, word32 bufSz, word16* portionLen, word16* remainderLen);
+WOLFSPDM_TEST_API int wolfSPDM_ValidateCertChain(WOLFSPDM_CTX* ctx);
+WOLFSPDM_LOCAL int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx);
+#endif
 
 WOLFSPDM_API int wolfSPDM_SendReceive(WOLFSPDM_CTX* ctx,
     const byte* txBuf, word32 txSz,

@@ -80,6 +80,17 @@ if test "x$enable_dynamic_mem" = "xyes"; then
     AC_DEFINE([WOLFSPDM_DYNAMIC_MEMORY], [1], [Enable dynamic memory allocation])
 fi
 
+# Standard certificate-based requester (DSP0274 flow for non-TPM responders)
+AC_ARG_ENABLE([cert],
+    [AS_HELP_STRING([--disable-cert], [Disable the standard certificate-based requester (default: enabled)])],
+    [enable_cert=$enableval],
+    [enable_cert=yes])
+
+if test "x$enable_cert" = "xno"; then
+    AC_DEFINE([WOLFSPDM_NO_CERT], [1], [Disable the standard certificate requester])
+fi
+AM_CONDITIONAL([BUILD_CERT], [test "x$enable_cert" = "xyes"])
+
 # TCG SPDM binding (TPM transport). Nuvoton/Nations imply it.
 AC_ARG_ENABLE([tcg],
     [AS_HELP_STRING([--enable-tcg], [Enable the TCG SPDM binding (default: disabled)])],
@@ -150,6 +161,7 @@ echo "wolfSPDM configuration summary:"
 echo "  Version:     $PACKAGE_VERSION"
 echo "  Debug:       $enable_debug"
 echo "  Dynamic mem: $enable_dynamic_mem"
+echo "  Standard:    $enable_cert"
 echo "  TCG:         $enable_tcg"
 echo "  PSK:         $enable_psk"
 echo "  Nuvoton:     $enable_nuvoton"

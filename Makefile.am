@@ -11,6 +11,9 @@ libwolfspdm_la_SOURCES = \
     src/spdm_session.c \
     src/spdm_transcript.c
 
+if BUILD_CERT
+libwolfspdm_la_SOURCES += src/spdm_standard.c
+endif
 if BUILD_TCG
 libwolfspdm_la_SOURCES += src/spdm_tcg.c
 endif
@@ -55,11 +58,19 @@ nobase_include_HEADERS = \
 # Test programs
 check_PROGRAMS = test/unit_test
 
-test_unit_test_SOURCES = test/unit_test.c
+test_unit_test_SOURCES = test/unit_test.c test/test_certs.h
 test_unit_test_CPPFLAGS = -I$(srcdir)/wolfspdm -I$(srcdir)/src
 test_unit_test_LDADD = libwolfspdm.la -lwolfssl
 
 TESTS = test/unit_test
+
+# spdm-emu driver (standard certificate flow over TCP/MCTP)
+if BUILD_CERT
+noinst_PROGRAMS = examples/spdm_demo
+examples_spdm_demo_SOURCES = examples/spdm_demo.c
+examples_spdm_demo_CPPFLAGS = -I$(srcdir)/wolfspdm
+examples_spdm_demo_LDADD = libwolfspdm.la -lwolfssl
+endif
 
 # pkgconfig
 pkgconfigdir = $(libdir)/pkgconfig
@@ -67,6 +78,7 @@ pkgconfig_DATA = wolfspdm.pc
 
 EXTRA_DIST = \
     src/spdm_internal.h \
+    examples/spdm_test.sh \
     autogen.sh \
     README.md \
     LICENSE \

@@ -159,6 +159,9 @@ int wolfSPDM_SetResponderPubKey(WOLFSPDM_CTX* ctx,
     XMEMCPY(ctx->rspPubKey, pubKey, pubKeySz);
     ctx->rspPubKeyLen = pubKeySz;
     ctx->flags.hasRspPubKey = 1;
+#ifndef WOLFSPDM_NO_CERT
+    ctx->flags.rspKeyFromCert = 0;
+#endif
 
     return WOLFSPDM_SUCCESS;
 }
@@ -201,6 +204,24 @@ int wolfSPDM_SetRequesterKeyTPMT(WOLFSPDM_CTX* ctx,
 #endif /* WOLFSPDM_TCG */
 
 /* wolfSPDM_SetPSK moved to spdm_psk.c */
+
+int wolfSPDM_SetMaxVersion(WOLFSPDM_CTX* ctx, byte maxVersion)
+{
+    if (ctx == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    if (maxVersion != 0 && (maxVersion < WOLFSPDM_MIN_SPDM_VERSION ||
+            maxVersion > WOLFSPDM_MAX_SPDM_VERSION)) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    ctx->maxVersion = maxVersion;
+    return WOLFSPDM_SUCCESS;
+}
+
+byte wolfSPDM_GetLastPeerError(WOLFSPDM_CTX* ctx)
+{
+    return (ctx == NULL) ? 0 : ctx->lastPeerErrorCode;
+}
 
 void wolfSPDM_SetDebug(WOLFSPDM_CTX* ctx, int enable)
 {
@@ -269,9 +290,11 @@ int wolfSPDM_IsConnected(WOLFSPDM_CTX* ctx)
     return (ctx->state == WOLFSPDM_STATE_CONNECTED) ? 1 : 0;
 }
 
+/* Valid from KEY_EXCHANGE_RSP on: transports need it to frame FINISH */
 word32 wolfSPDM_GetSessionId(WOLFSPDM_CTX* ctx)
 {
-    if (ctx == NULL || ctx->state != WOLFSPDM_STATE_CONNECTED) {
+    if (ctx == NULL || ctx->state < WOLFSPDM_STATE_KEY_EX ||
+            ctx->state == WOLFSPDM_STATE_ERROR) {
         return 0;
     }
     return ctx->sessionId;
@@ -330,8 +353,13 @@ int wolfSPDM_Connect(WOLFSPDM_CTX* ctx)
         return wolfSPDM_ConnectPsk(ctx);
     }
 #endif
+#ifndef WOLFSPDM_NO_CERT
+    if (ctx->mode == WOLFSPDM_MODE_AUTO) {
+        return wolfSPDM_ConnectStandard(ctx);
+    }
+#endif
 
-    return WOLFSPDM_E_INVALID_ARG; /* Standard mode not available */
+    return WOLFSPDM_E_INVALID_ARG;
 }
 
 int wolfSPDM_Disconnect(WOLFSPDM_CTX* ctx)
@@ -576,6 +604,10 @@ const char* wolfSPDM_GetErrorString(int error)
         case WOLFSPDM_E_NOT_AVAILABLE:    return "Feature not compiled in";
         case WOLFSPDM_E_FRAMING:          return "Framing violation";
         case WOLFSPDM_E_NOT_IMPL:         return "Not implemented";
+        case WOLFSPDM_E_CERT_FAIL:        return "Certificate check failed";
+        case WOLFSPDM_E_CAPS_MISMATCH:    return "Capability mismatch";
+        case WOLFSPDM_E_ALGO_MISMATCH:    return "Algorithm mismatch";
+        case WOLFSPDM_E_CERT_PARSE:       return "Certificate parse failed";
         default:                          return "Unknown error";
     }
 }

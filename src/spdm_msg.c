@@ -126,8 +126,12 @@ int wolfSPDM_BuildKeyExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
         buf[offset++] = ctx->spdmVersion;
         buf[offset++] = SPDM_KEY_EXCHANGE;
         buf[offset++] = 0x00;  /* MeasurementSummaryHashType = None */
-        /* SlotID: 0xFF = provisioned public key (TCG), else cert slot 0 */
+        /* SlotID: 0xFF = provisioned public key (TCG), else the cert slot */
+#ifndef WOLFSPDM_NO_CERT
+        buf[offset++] = wolfSPDM_IsTcgMode(ctx) ? 0xFF : ctx->currentSlotId;
+#else
         buf[offset++] = wolfSPDM_IsTcgMode(ctx) ? 0xFF : 0x00;
+#endif
 
         /* ReqSessionID (2 LE) */
         buf[offset++] = (byte)(ctx->reqSessionId & 0xFF);
@@ -419,6 +423,12 @@ int wolfSPDM_ParseKeyExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufS
 
     SPDM_CHECK_PARSE_ARGS(ctx, buf, bufSz, 140);
     SPDM_CHECK_RESPONSE(ctx, buf, bufSz, SPDM_KEY_EXCHANGE_RSP, WOLFSPDM_E_KEY_EXCHANGE);
+
+    /* Only the TCG binding carries a requester identity (GIVE_PUB) */
+    if (!wolfSPDM_IsTcgMode(ctx) && buf[6] != 0) {
+        wolfSPDM_DebugPrint(ctx, "KEY_EXCHANGE_RSP: mutual auth unsupported\n");
+        return WOLFSPDM_E_KEY_EXCHANGE;
+    }
 
     /* RspSessionID (4-5), MutAuthRequested (6), ReqSlotIDParam (7) are
      * committed to ctx only after the signature and HMAC verify */

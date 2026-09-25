@@ -175,6 +175,66 @@ extern "C" {
 #define WOLFSPDM_PUBKEY_BUF_SZ     256  /* Public key buffer */
 #endif
 
+/* ----- TPM Build Profile ----- */
+
+/* Built inside wolfTPM: the TPM only speaks the TCG binding */
+#if defined(WOLFTPM_SPDM) && !defined(WOLFSPDM_PROFILE_TPM)
+    #define WOLFSPDM_PROFILE_TPM
+#endif
+#if defined(WOLFSPDM_PROFILE_TPM) && !defined(WOLFSPDM_NO_CERT)
+    #define WOLFSPDM_NO_CERT
+#endif
+#if defined(NO_ASN) && !defined(WOLFSPDM_NO_CERT)
+    #define WOLFSPDM_NO_CERT
+#endif
+
+#ifndef WOLFSPDM_NO_CERT
+/* ----- Standard (certificate) Requester, DSP0274 ----- */
+
+#define SPDM_GET_DIGESTS            0x81
+#define SPDM_GET_CERTIFICATE        0x82
+#define SPDM_GET_CAPABILITIES       0xE1
+#define SPDM_NEGOTIATE_ALGORITHMS   0xE3
+#define SPDM_DIGESTS                0x01
+#define SPDM_CERTIFICATE            0x02
+#define SPDM_CAPABILITIES           0x61
+#define SPDM_ALGORITHMS             0x63
+
+/* CAPABILITIES flags */
+#define SPDM_CAP_CERT_CAP           0x00000002
+#define SPDM_CAP_ENCRYPT_CAP        0x00000040
+#define SPDM_CAP_MAC_CAP            0x00000080
+#define SPDM_CAP_KEY_EX_CAP         0x00000200
+
+#ifndef WOLFSPDM_REQ_CAPS
+#define WOLFSPDM_REQ_CAPS  (SPDM_CAP_ENCRYPT_CAP | SPDM_CAP_MAC_CAP | \
+                            SPDM_CAP_KEY_EX_CAP)
+#endif
+
+/* Algorithm Set B selections */
+#define SPDM_HASH_ALGO_SHA_384      0x00000002
+#define SPDM_ASYM_ALGO_ECDSA_P384   0x00000080
+#define SPDM_DHE_ALGO_SECP384R1     0x0010
+#define SPDM_AEAD_ALGO_AES_256_GCM  0x0002
+#define SPDM_KEY_SCHEDULE_SPDM      0x0001
+
+/* ALGORITHMS AlgStruct AlgType values (DSP0274 Table 16) */
+#define SPDM_ALG_TYPE_DHE           2
+#define SPDM_ALG_TYPE_AEAD          3
+#define SPDM_ALG_TYPE_REQ_BASE_ASYM 4
+#define SPDM_ALG_TYPE_KEY_SCHEDULE  5
+
+/* SPDM cert chain header: Length(2) + Reserved(2) + RootHash(48) */
+#define WOLFSPDM_CERT_CHAIN_HDR_SZ  (4 + WOLFSPDM_HASH_SIZE)
+
+#ifndef WOLFSPDM_MAX_CERT_CHAIN
+#define WOLFSPDM_MAX_CERT_CHAIN     4096
+#endif
+#ifndef WOLFSPDM_MAX_TRUSTED_CA
+#define WOLFSPDM_MAX_TRUSTED_CA     2048
+#endif
+#endif /* !WOLFSPDM_NO_CERT */
+
 /* ----- TCG Build Option ----- */
 
 /* Nuvoton or Nations enables TCG SPDM binding; future chips can set directly */

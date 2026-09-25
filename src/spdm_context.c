@@ -27,6 +27,9 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+typedef char wolfSPDM_ctx_size_check_[
+    (sizeof(struct WOLFSPDM_CTX) <= WOLFSPDM_CTX_STATIC_SIZE) ? 1 : -1];
+
 /* ----- Context Management ----- */
 
 int wolfSPDM_Init(WOLFSPDM_CTX* ctx)
@@ -411,9 +414,7 @@ int wolfSPDM_SendReceive(WOLFSPDM_CTX* ctx,
     }
 
 #ifdef WOLFSPDM_TCG
-    if (ctx->mode == WOLFSPDM_MODE_NUVOTON ||
-        ctx->mode == WOLFSPDM_MODE_NATIONS ||
-        ctx->mode == WOLFSPDM_MODE_NATIONS_PSK) {
+    if (wolfSPDM_IsTcgMode(ctx)) {
         /* Wrap messages with TCG SPDM
          * headers; I/O sends TCG-framed messages. */
         byte tcgTx[WOLFSPDM_MAX_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD +

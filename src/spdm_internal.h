@@ -190,6 +190,14 @@ struct WOLFSPDM_CTX {
     } flags;
 };
 
+/* The vendor modes select TCG binding framing and pinned-key identity */
+static WC_INLINE int wolfSPDM_IsTcgMode(const WOLFSPDM_CTX* ctx)
+{
+    return ctx->mode == WOLFSPDM_MODE_NUVOTON ||
+           ctx->mode == WOLFSPDM_MODE_NATIONS ||
+           ctx->mode == WOLFSPDM_MODE_NATIONS_PSK;
+}
+
 /* ----- Byte-Order Helpers ----- */
 
 static WC_INLINE void SPDM_Set16LE(byte* buf, word16 val) {

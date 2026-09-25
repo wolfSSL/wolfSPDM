@@ -536,6 +536,8 @@ static int test_mitm_signature_rejected(void)
     /* Parse should reject: signature doesn't match real responder's key */
     rc = wolfSPDM_ParseKeyExchangeRsp(ctx, keRsp, 282);
     ASSERT_EQ(rc, WOLFSPDM_E_BAD_SIGNATURE, "MITM forged sig must be rejected");
+    ASSERT_EQ(ctx->sessionId, (word32)0,
+        "forged response must not set the session ID");
 
     wc_ecc_free(&realKey);
     wc_ecc_free(&attackerKey);
@@ -2199,6 +2201,82 @@ static int test_build_key_exchange_format(void)
     TEST_PASS();
 }
 
+static int test_build_key_exchange_mode_opaque(void)
+{
+    byte buf[256];
+    word32 bufSz = sizeof(buf);
+    TEST_CTX_SETUP_V12();
+    printf("test_build_key_exchange_mode_opaque...\n");
+
+    /* Standard mode: cert slot 0 and the 20-byte version list */
+    ASSERT_SUCCESS(wolfSPDM_BuildKeyExchange(ctx, buf, &bufSz));
+    ASSERT_EQ(buf[3], 0x00, "standard SlotID must be 0");
+    ASSERT_EQ(bufSz, (word32)(136 + 22), "standard KEY_EXCHANGE size");
+    ASSERT_EQ(buf[136], 0x14, "standard OpaqueLength must be 20");
+
+#ifdef WOLFSPDM_NUVOTON
+    ASSERT_SUCCESS(wolfSPDM_SetMode(ctx, WOLFSPDM_MODE_NUVOTON));
+    bufSz = sizeof(buf);
+    ASSERT_SUCCESS(wolfSPDM_BuildKeyExchange(ctx, buf, &bufSz));
+    ASSERT_EQ(buf[3], 0xFF, "Nuvoton SlotID must be 0xFF");
+    ASSERT_EQ(bufSz, (word32)(136 + 14), "Nuvoton KEY_EXCHANGE size");
+    ASSERT_EQ(buf[136], 0x0C, "Nuvoton OpaqueLength must be 12");
+#endif
+#ifdef WOLFSPDM_NATIONS
+    ASSERT_SUCCESS(wolfSPDM_SetMode(ctx, WOLFSPDM_MODE_NATIONS));
+    bufSz = sizeof(buf);
+    ASSERT_SUCCESS(wolfSPDM_BuildKeyExchange(ctx, buf, &bufSz));
+    ASSERT_EQ(buf[3], 0xFF, "Nations SlotID must be 0xFF");
+    ASSERT_EQ(bufSz, (word32)(136 + 2), "Nations KEY_EXCHANGE size");
+    ASSERT_EQ(buf[136] | buf[137], 0, "Nations OpaqueLength must be 0");
+#endif
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
+static int test_decrypt_rejects_wrong_mctp_type(void)
+{
+    /* An authenticated record whose inner MCTP type is not SPDM must be
+     * rejected, and the sequence still advances past the verified tag */
+    Aes aes;
+    byte inner[4];
+    byte rec[8 + sizeof(inner) + WOLFSPDM_AEAD_TAG_SIZE];
+    byte iv[WOLFSPDM_AEAD_IV_SIZE];
+    byte dec[64];
+    word32 decSz = sizeof(dec);
+    TEST_CTX_SETUP_V12();
+    printf("test_decrypt_rejects_wrong_mctp_type...\n");
+
+    ctx->sessionId = 0x11223344;
+    XMEMSET(ctx->rspDataKey, 0x33, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMSET(ctx->rspDataIv, 0x44, WOLFSPDM_AEAD_IV_SIZE);
+
+    SPDM_Set16LE(inner, 2);
+    inner[2] = 0x06;
+    inner[3] = SPDM_VERSION_12;
+    SPDM_Set32LE(&rec[0], ctx->sessionId);
+    SPDM_Set16LE(&rec[4], 0);
+    SPDM_Set16LE(&rec[6], (word16)(sizeof(inner) + WOLFSPDM_AEAD_TAG_SIZE));
+    wolfSPDM_BuildIV(iv, ctx->rspDataIv, 0);
+
+    ASSERT_SUCCESS(wc_AesInit(&aes, NULL, INVALID_DEVID));
+    ASSERT_SUCCESS(wc_AesGcmSetKey(&aes, ctx->rspDataKey,
+        WOLFSPDM_AEAD_KEY_SIZE));
+    ASSERT_SUCCESS(wc_AesGcmEncrypt(&aes, &rec[8], inner, sizeof(inner),
+        iv, sizeof(iv), &rec[8 + sizeof(inner)], WOLFSPDM_AEAD_TAG_SIZE,
+        rec, 8));
+    wc_AesFree(&aes);
+
+    ASSERT_EQ(wolfSPDM_DecryptInternal(ctx, rec, sizeof(rec), dec, &decSz),
+        WOLFSPDM_E_DECRYPT_FAIL, "wrong inner MCTP type must fail");
+    ASSERT_EQ(ctx->rspSeqNum, (word64)1,
+        "authenticated record must advance rspSeqNum");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
 static int test_build_finish_null_args(void)
 {
     byte buf[256];
@@ -2286,6 +2364,12 @@ static int test_encrypt_decrypt_roundtrip(void)
 
     /* Reset rsp seq to match what was encrypted (req incremented to 1) */
     ctx->rspSeqNum = 0;
+
+    /* Trailing bytes past the record Length must be rejected */
+    enc[encSz] = 0x00;
+    ASSERT_EQ(wolfSPDM_DecryptInternal(ctx, enc, encSz + 1, dec, &decSz),
+        WOLFSPDM_E_BUFFER_SMALL, "trailing byte must be rejected");
+    decSz = sizeof(dec);
 
     /* Decrypt */
     ASSERT_SUCCESS(wolfSPDM_DecryptInternal(ctx, enc, encSz, dec, &decSz));
@@ -2909,12 +2993,14 @@ int main(void)
     /* Internal message building */
     test_build_key_exchange_null_args();
     test_build_key_exchange_format();
+    test_build_key_exchange_mode_opaque();
     test_build_finish_null_args();
     test_build_finish_format();
 
     /* Internal encrypt/decrypt */
     test_encrypt_internal_null_args();
     test_encrypt_decrypt_roundtrip();
+    test_decrypt_rejects_wrong_mctp_type();
 #ifdef WOLFSPDM_TCG
     test_encrypt_decrypt_roundtrip_tcg();
 #endif

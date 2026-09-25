@@ -53,17 +53,47 @@ static int wolfSPDM_BuildSimpleMsg(WOLFSPDM_CTX* ctx, byte msgCode,
     return WOLFSPDM_SUCCESS;
 }
 
-/* KEY_EXCHANGE request size: 8-byte header, 32-byte RandomData, and two ECC
- * coordinates, plus a config-specific OpaqueData block. Keep
- * WOLFSPDM_KEYEX_OPAQUE_SZ in sync with the OpaqueData written below. */
+/* KEY_EXCHANGE request size: 8-byte header, 32-byte RandomData and two ECC
+ * coordinates, followed by the mode's OpaqueData block. */
 #define WOLFSPDM_KEYEX_FIXED_SZ  (40 + 2 * WOLFSPDM_ECC_KEY_SIZE)
+
+/* Standard SPDM 1.2+ secured message version list: OpaqueLength(2) + 20 */
+static const byte kexOpaqueStd[] = {
+    0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x01, 0x01,
+    0x03, 0x00, 0x10, 0x00, 0x11, 0x00, 0x12, 0x00, 0x00, 0x00
+};
 #ifdef WOLFSPDM_NUVOTON
-    #define WOLFSPDM_KEYEX_OPAQUE_SZ 14
-#elif defined(WOLFSPDM_NATIONS)
-    #define WOLFSPDM_KEYEX_OPAQUE_SZ 2
-#else
-    #define WOLFSPDM_KEYEX_OPAQUE_SZ 22
+static const byte kexOpaqueNuvoton[] = {
+    0x0c, 0x00, 0x00, 0x00, 0x05, 0x00, 0x01, 0x01, 0x01, 0x00, 0x10, 0x00,
+    0x00, 0x00
+};
 #endif
+#ifdef WOLFSPDM_NATIONS
+/* Nations only accepts OpaqueLength=0 */
+static const byte kexOpaqueNations[] = { 0x00, 0x00 };
+#endif
+
+static void wolfSPDM_KeyExOpaque(const WOLFSPDM_CTX* ctx,
+    const byte** opaque, word32* opaqueSz)
+{
+    *opaque = kexOpaqueStd;
+    *opaqueSz = (word32)sizeof(kexOpaqueStd);
+#ifdef WOLFSPDM_NUVOTON
+    if (ctx->mode == WOLFSPDM_MODE_NUVOTON) {
+        *opaque = kexOpaqueNuvoton;
+        *opaqueSz = (word32)sizeof(kexOpaqueNuvoton);
+    }
+#endif
+#ifdef WOLFSPDM_NATIONS
+    if (ctx->mode == WOLFSPDM_MODE_NATIONS) {
+        *opaque = kexOpaqueNations;
+        *opaqueSz = (word32)sizeof(kexOpaqueNations);
+    }
+#endif
+#if !defined(WOLFSPDM_NUVOTON) && !defined(WOLFSPDM_NATIONS)
+    (void)ctx;
+#endif
+}
 
 int wolfSPDM_BuildKeyExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
 {
@@ -72,11 +102,17 @@ int wolfSPDM_BuildKeyExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
     byte pubKeyY[WOLFSPDM_ECC_KEY_SIZE];
     word32 pubKeyXSz = sizeof(pubKeyX);
     word32 pubKeyYSz = sizeof(pubKeyY);
+    const byte* opaque;
+    word32 opaqueSz;
     int rc;
 
+    if (ctx == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    wolfSPDM_KeyExOpaque(ctx, &opaque, &opaqueSz);
+
     /* Require exactly the encoded request size */
-    SPDM_CHECK_BUILD_ARGS(ctx, buf, bufSz,
-        WOLFSPDM_KEYEX_FIXED_SZ + WOLFSPDM_KEYEX_OPAQUE_SZ);
+    SPDM_CHECK_BUILD_ARGS(ctx, buf, bufSz, WOLFSPDM_KEYEX_FIXED_SZ + opaqueSz);
 
     rc = wolfSPDM_GenerateEphemeralKey(ctx);
     if (rc == WOLFSPDM_SUCCESS)
@@ -90,11 +126,8 @@ int wolfSPDM_BuildKeyExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
         buf[offset++] = ctx->spdmVersion;
         buf[offset++] = SPDM_KEY_EXCHANGE;
         buf[offset++] = 0x00;  /* MeasurementSummaryHashType = None */
-#ifdef WOLFSPDM_TCG
-        buf[offset++] = 0xFF;  /* SlotID = 0xFF (no cert, use provisioned public key) */
-#else
-        buf[offset++] = 0x00;  /* SlotID = 0 (certificate slot 0) */
-#endif
+        /* SlotID: 0xFF = provisioned public key (TCG), else cert slot 0 */
+        buf[offset++] = wolfSPDM_IsTcgMode(ctx) ? 0xFF : 0x00;
 
         /* ReqSessionID (2 LE) */
         buf[offset++] = (byte)(ctx->reqSessionId & 0xFF);
@@ -115,34 +148,8 @@ int wolfSPDM_BuildKeyExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
             offset += WOLFSPDM_ECC_KEY_SIZE;
 
             /* OpaqueData for secured message version negotiation */
-#ifdef WOLFSPDM_NUVOTON
-            /* Nuvoton vendor format: 12 bytes */
-            buf[offset++] = 0x0c; buf[offset++] = 0x00;
-            buf[offset++] = 0x00; buf[offset++] = 0x00;
-            buf[offset++] = 0x05; buf[offset++] = 0x00;
-            buf[offset++] = 0x01; buf[offset++] = 0x01;
-            buf[offset++] = 0x01; buf[offset++] = 0x00;
-            buf[offset++] = 0x10; buf[offset++] = 0x00;
-            buf[offset++] = 0x00; buf[offset++] = 0x00;
-#elif defined(WOLFSPDM_NATIONS)
-            /* Empty OpaqueData — Nations only accepts OpaqueLength=0 */
-            buf[offset++] = 0x00; buf[offset++] = 0x00;
-#else
-            /* Standard SPDM 1.2+ OpaqueData format: 20 bytes */
-            buf[offset++] = 0x14;  /* OpaqueLength = 20 */
-            buf[offset++] = 0x00;
-            buf[offset++] = 0x01; buf[offset++] = 0x00;  /* TotalElements */
-            buf[offset++] = 0x00; buf[offset++] = 0x00;  /* Reserved */
-            buf[offset++] = 0x00; buf[offset++] = 0x00;
-            buf[offset++] = 0x09; buf[offset++] = 0x00;  /* DataSize */
-            buf[offset++] = 0x01;  /* Registry ID */
-            buf[offset++] = 0x01;  /* VendorLen */
-            buf[offset++] = 0x03; buf[offset++] = 0x00;  /* VersionCount */
-            buf[offset++] = 0x10; buf[offset++] = 0x00;  /* 1.0 */
-            buf[offset++] = 0x11; buf[offset++] = 0x00;  /* 1.1 */
-            buf[offset++] = 0x12; buf[offset++] = 0x00;  /* 1.2 */
-            buf[offset++] = 0x00; buf[offset++] = 0x00;  /* Padding */
-#endif
+            XMEMCPY(&buf[offset], opaque, opaqueSz);
+            offset += opaqueSz;
 
             *bufSz = offset;
         }
@@ -413,14 +420,10 @@ int wolfSPDM_ParseKeyExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufS
     SPDM_CHECK_PARSE_ARGS(ctx, buf, bufSz, 140);
     SPDM_CHECK_RESPONSE(ctx, buf, bufSz, SPDM_KEY_EXCHANGE_RSP, WOLFSPDM_E_KEY_EXCHANGE);
 
-    ctx->rspSessionId = SPDM_Get16LE(&buf[4]);
-    ctx->sessionId = (word32)ctx->reqSessionId | ((word32)ctx->rspSessionId << 16);
-
-    /* Parse MutAuthRequested and ReqSlotIDParam (offsets 6-7) */
-    ctx->mutAuthRequested = buf[6];
-    ctx->reqSlotIdParam = buf[7];
+    /* RspSessionID (4-5), MutAuthRequested (6), ReqSlotIDParam (7) are
+     * committed to ctx only after the signature and HMAC verify */
     wolfSPDM_DebugPrint(ctx, "KEY_EXCHANGE_RSP: MutAuth=0x%02x ReqSlotID=0x%02x\n",
-        ctx->mutAuthRequested, ctx->reqSlotIdParam);
+        buf[6], buf[7]);
 
     /* Extract responder's ephemeral public key (offset 40 = 4+2+1+1+32) */
     XMEMCPY(peerPubKeyX, &buf[40], WOLFSPDM_ECC_KEY_SIZE);
@@ -492,6 +495,11 @@ int wolfSPDM_ParseKeyExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufS
         rc = wolfSPDM_TranscriptAdd(ctx, rspVerifyData, WOLFSPDM_HASH_SIZE);
     }
     if (rc == WOLFSPDM_SUCCESS) {
+        ctx->rspSessionId = SPDM_Get16LE(&buf[4]);
+        ctx->sessionId = (word32)ctx->reqSessionId |
+            ((word32)ctx->rspSessionId << 16);
+        ctx->mutAuthRequested = buf[6];
+        ctx->reqSlotIdParam = buf[7];
         ctx->state = WOLFSPDM_STATE_KEY_EX;
     }
 

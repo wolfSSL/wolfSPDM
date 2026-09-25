@@ -64,9 +64,7 @@ int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
     }
 
 #ifdef WOLFSPDM_TCG
-    if (ctx->mode == WOLFSPDM_MODE_NUVOTON ||
-        ctx->mode == WOLFSPDM_MODE_NATIONS ||
-        ctx->mode == WOLFSPDM_MODE_NATIONS_PSK) {
+    if (wolfSPDM_IsTcgMode(ctx)) {
         /* Nuvoton TCG binding format per Rev 1.11 spec page 25:
          * Header/AAD: SessionID(4 LE) + SeqNum(8 LE) + Length(2 LE) = 14 bytes
          * IV XOR: Leftmost 8 bytes (bytes 0-7) with 8-byte LE sequence number
@@ -200,9 +198,7 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
     /* ----- Transport-specific header parsing ----- */
 
 #ifdef WOLFSPDM_TCG
-    if (ctx->mode == WOLFSPDM_MODE_NUVOTON ||
-        ctx->mode == WOLFSPDM_MODE_NATIONS ||
-        ctx->mode == WOLFSPDM_MODE_NATIONS_PSK) {
+    if (wolfSPDM_IsTcgMode(ctx)) {
         word64 rspSeqNum64;
         word32 rspSessionId;
         word16 rspLen;
@@ -263,7 +259,8 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
                 rspSeqNum, (unsigned long long)ctx->rspSeqNum);
             return WOLFSPDM_E_SEQUENCE;
         }
-        if (rspLen < WOLFSPDM_AEAD_TAG_SIZE || encSz < (word32)(hdrSz + rspLen))
+        /* DSP0277: Length covers exactly the rest of the record */
+        if (rspLen < WOLFSPDM_AEAD_TAG_SIZE || encSz != (word32)(hdrSz + rspLen))
             return WOLFSPDM_E_BUFFER_SMALL;
 
         cipherLen = (word32)(rspLen - WOLFSPDM_AEAD_TAG_SIZE);
@@ -313,9 +310,7 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
     else if (rc == 0) {
         appDataLen = SPDM_Get16LE(decrypted);
 #ifdef WOLFSPDM_TCG
-        if (ctx->mode == WOLFSPDM_MODE_NUVOTON ||
-            ctx->mode == WOLFSPDM_MODE_NATIONS ||
-            ctx->mode == WOLFSPDM_MODE_NATIONS_PSK) {
+        if (wolfSPDM_IsTcgMode(ctx)) {
             /* TCG binding: AppDataLen(2) || SPDM msg || RandomData */
             if (cipherLen < (word32)(2 + appDataLen) ||
                 *plainSz < appDataLen) {
@@ -332,6 +327,8 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
             if (appDataLen < 1 || cipherLen < (word32)(2 + appDataLen) ||
                 *plainSz < (word32)(appDataLen - 1)) {
                 ret = WOLFSPDM_E_BUFFER_SMALL;
+            } else if (decrypted[2] != MCTP_MESSAGE_TYPE_SPDM) {
+                ret = WOLFSPDM_E_DECRYPT_FAIL;
             } else {
                 XMEMCPY(plain, &decrypted[3], appDataLen - 1);
                 *plainSz = appDataLen - 1;

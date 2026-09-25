@@ -186,6 +186,7 @@ struct WOLFSPDM_CTX {
 #ifndef WOLFSPDM_NO_CERT
     /* Standard requester: negotiated limits and responder cert chain */
     word32 rspCaps;
+    word32 vcaLen;              /* transcript length after ALGORITHMS */
     word32 dataTransferSize;
     word32 maxSpdmMsgSize;
     word32 certChainLen;
@@ -194,6 +195,17 @@ struct WOLFSPDM_CTX {
     byte   currentSlotId;
     byte   certChain[WOLFSPDM_MAX_CERT_CHAIN];
     byte   trustedCA[WOLFSPDM_MAX_TRUSTED_CA];
+#endif
+#ifndef WOLFSPDM_NO_MEAS
+    wc_Sha384 l1l2Hash;         /* running L1/L2 over unsigned measurements */
+    word32 measRecordLen;
+    byte   measBlockCount;
+    byte   l1l2State;           /* WOLFSPDM_RUN_* */
+    byte   measRecord[WOLFSPDM_MAX_MEAS_RECORD];
+#endif
+#ifndef WOLFSPDM_NO_CHALLENGE
+    wc_Sha384 m1Hash;           /* running M1: VCA, DIGESTS, CERTIFICATE */
+    byte   m1State;             /* WOLFSPDM_RUN_* */
 #endif
 
     /* Boolean flag bit field (at end for better struct packing) */
@@ -209,6 +221,7 @@ struct WOLFSPDM_CTX {
         unsigned int allowUntrustedCert : 1;
         unsigned int rspKeyFromCert     : 1;
 #endif
+
     } flags;
 };
 
@@ -419,6 +432,31 @@ WOLFSPDM_TEST_API int wolfSPDM_ParseCertificate(WOLFSPDM_CTX* ctx,
     const byte* buf, word32 bufSz, word16* portionLen, word16* remainderLen);
 WOLFSPDM_TEST_API int wolfSPDM_ValidateCertChain(WOLFSPDM_CTX* ctx);
 WOLFSPDM_LOCAL int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx);
+#endif
+
+#if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)
+/* Running transcript hash states */
+#define WOLFSPDM_RUN_NONE   0
+#define WOLFSPDM_RUN_LIVE   1   /* initialized, not extendable */
+#define WOLFSPDM_RUN_OPEN   2   /* extendable by the next message */
+WOLFSPDM_LOCAL void wolfSPDM_AttestFree(WOLFSPDM_CTX* ctx);
+#endif
+#ifndef WOLFSPDM_NO_MEAS
+WOLFSPDM_TEST_API int wolfSPDM_BuildGetMeasurements(WOLFSPDM_CTX* ctx,
+    byte* buf, word32* bufSz, byte operation, int requestSig);
+WOLFSPDM_TEST_API int wolfSPDM_ParseMeasurements(WOLFSPDM_CTX* ctx,
+    const byte* req, word32 reqSz, const byte* buf, word32 bufSz,
+    word32* sigOff);
+#endif
+#ifndef WOLFSPDM_NO_CHALLENGE
+WOLFSPDM_LOCAL int wolfSPDM_M1Start(WOLFSPDM_CTX* ctx);
+WOLFSPDM_LOCAL int wolfSPDM_M1Add(WOLFSPDM_CTX* ctx, const byte* req,
+    word32 reqSz, const byte* rsp, word32 rspSz);
+WOLFSPDM_TEST_API int wolfSPDM_BuildChallenge(WOLFSPDM_CTX* ctx, byte* buf,
+    word32* bufSz, int slotId, byte measHashType);
+WOLFSPDM_TEST_API int wolfSPDM_ParseChallengeAuth(WOLFSPDM_CTX* ctx,
+    const byte* req, word32 reqSz, const byte* buf, word32 bufSz,
+    word32* sigOff);
 #endif
 
 #ifndef WOLFSPDM_NO_HEARTBEAT

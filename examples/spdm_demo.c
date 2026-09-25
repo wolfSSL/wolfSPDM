@@ -386,15 +386,13 @@ static int do_meas(WOLFSPDM_CTX* ctx, int withSig)
             wolfSPDM_GetMeasurementCount(ctx));
     }
     else {
-        /* Unsigned: NOT_VERIFIED is the expected success return */
-        if (rc != WOLFSPDM_SUCCESS && rc != WOLFSPDM_E_MEAS_NOT_VERIFIED) {
+        if (rc != WOLFSPDM_SUCCESS) {
             fprintf(stderr, "GetMeasurements (unsigned): %s (%d)\n",
                 wolfSPDM_GetErrorString(rc), rc);
             return rc;
         }
         printf("Unsigned measurements received (%d blocks)\n",
             wolfSPDM_GetMeasurementCount(ctx));
-        rc = WOLFSPDM_SUCCESS;
     }
     return rc;
 }

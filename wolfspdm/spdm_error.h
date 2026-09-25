@@ -58,6 +58,8 @@ enum WOLFSPDM_ERROR {
     WOLFSPDM_E_ALGO_MISMATCH    = -23,  /* Algorithm negotiation failed */
     WOLFSPDM_E_CERT_PARSE       = -24,  /* Certificate could not be parsed */
     WOLFSPDM_E_KEY_UPDATE       = -25,  /* Key update failed */
+    WOLFSPDM_E_MEASUREMENT      = -26,  /* Malformed MEASUREMENTS response */
+    WOLFSPDM_E_CHALLENGE        = -27,  /* Malformed or mismatched CHALLENGE_AUTH */
 };
 
 /* Get human-readable error string */

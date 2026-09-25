@@ -143,6 +143,24 @@ WOLFSPDM_API int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
     const byte* cmdPlain, word32 cmdSz,
     byte* rspPlain, word32* rspSz);
 
+#ifndef WOLFSPDM_NO_MEAS
+#define WOLFSPDM_HAS_MEASUREMENTS
+/* Fetch measurements over the session; a signed request is verified against
+ * the responder key before the blocks are exposed */
+WOLFSPDM_API int wolfSPDM_GetMeasurements(WOLFSPDM_CTX* ctx,
+    byte measOperation, int requestSignature);
+WOLFSPDM_API int wolfSPDM_GetMeasurementCount(WOLFSPDM_CTX* ctx);
+/* valueSz is in/out; measType is the DMTF value type, 0 for raw blocks */
+WOLFSPDM_API int wolfSPDM_GetMeasurementBlock(WOLFSPDM_CTX* ctx, int blockIdx,
+    byte* measIndex, byte* measType, byte* value, word32* valueSz);
+#endif
+#ifndef WOLFSPDM_NO_CHALLENGE
+#define WOLFSPDM_HAS_CHALLENGE
+/* Sessionless CHALLENGE after GET_CERTIFICATE for slotId; validates the
+ * chain and verifies CHALLENGE_AUTH over M1 */
+WOLFSPDM_API int wolfSPDM_Challenge(WOLFSPDM_CTX* ctx, int slotId,
+    byte measHashType);
+#endif
 #ifndef WOLFSPDM_NO_HEARTBEAT
 #define WOLFSPDM_HAS_HEARTBEAT
 WOLFSPDM_API int wolfSPDM_Heartbeat(WOLFSPDM_CTX* ctx);

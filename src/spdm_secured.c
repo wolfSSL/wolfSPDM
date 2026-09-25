@@ -359,6 +359,12 @@ int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
     if (ctx == NULL || cmdPlain == NULL || rspPlain == NULL || rspSz == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
+#ifndef WOLFSPDM_NO_MEAS
+    /* Only back-to-back GET_MEASUREMENTS extend L1/L2 */
+    if (ctx->l1l2State == WOLFSPDM_RUN_OPEN) {
+        ctx->l1l2State = WOLFSPDM_RUN_LIVE;
+    }
+#endif
 
     rc = wolfSPDM_EncryptInternal(ctx, cmdPlain, cmdSz, encBuf, &encSz);
     if (rc == WOLFSPDM_SUCCESS) {

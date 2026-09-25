@@ -77,6 +77,12 @@ int wolfSPDM_KeyExchange(WOLFSPDM_CTX* ctx)
     int rc;
 
     rc = wolfSPDM_BuildKeyExchange(ctx, txBuf, &txSz);
+#ifndef WOLFSPDM_NO_CHALLENGE
+    /* KEY_EXCHANGE drops DIGESTS and CERTIFICATE from M1 */
+    if (rc == WOLFSPDM_SUCCESS && ctx->m1State != WOLFSPDM_RUN_NONE) {
+        rc = wolfSPDM_M1Start(ctx);
+    }
+#endif
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_TranscriptAdd(ctx, txBuf, txSz);
     }

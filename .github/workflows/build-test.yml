@@ -94,6 +94,8 @@ jobs:
             configure: '--enable-tcg --enable-responder'
           - variant: no-session-ext
             configure: '--disable-heartbeat --disable-key-update'
+          - variant: no-attest
+            configure: '--disable-meas --disable-challenge'
           - variant: lean
             configure: '--disable-cert --disable-heartbeat --disable-key-update'
 

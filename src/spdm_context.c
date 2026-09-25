@@ -100,6 +100,9 @@ void wolfSPDM_Free(WOLFSPDM_CTX* ctx)
     if (ctx->flags.ephemeralKeyInit) {
         wc_ecc_free(&ctx->ephemeralKey);
     }
+#if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)
+    wolfSPDM_AttestFree(ctx);
+#endif
 
     /* Zero entire struct (covers all sensitive key material) */
     wc_ForceZero(ctx, sizeof(WOLFSPDM_CTX));
@@ -613,6 +616,8 @@ const char* wolfSPDM_GetErrorString(int error)
         case WOLFSPDM_E_ALGO_MISMATCH:    return "Algorithm mismatch";
         case WOLFSPDM_E_CERT_PARSE:       return "Certificate parse failed";
         case WOLFSPDM_E_KEY_UPDATE:       return "Key update failed";
+        case WOLFSPDM_E_MEASUREMENT:      return "Measurement response invalid";
+        case WOLFSPDM_E_CHALLENGE:        return "Challenge response invalid";
         default:                          return "Unknown error";
     }
 }

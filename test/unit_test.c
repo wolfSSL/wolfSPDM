@@ -3206,10 +3206,15 @@ static int test_derive_updated_keys(void)
     TEST_PASS();
 }
 
-/* Loopback responder: a mirrored context that answers secured requests */
+#endif /* !WOLFSPDM_NO_KEY_UPDATE */
+
+#if !defined(WOLFSPDM_NO_KEY_UPDATE) || !defined(WOLFSPDM_NO_MEAS) || \
+    !defined(WOLFSPDM_NO_CHALLENGE)
+/* Loopback responder: a mirrored context that answers requests */
 static WOLFSPDM_CTX g_peer;
 static int g_peerRejects;
 
+#ifndef WOLFSPDM_NO_KEY_UPDATE
 static void test_swap(byte* a, byte* b, word32 sz)
 {
     word32 i;
@@ -3229,52 +3234,234 @@ static void test_peer_swap_dirs(WOLFSPDM_CTX* p)
     test_swap(p->reqAppSecret, p->rspAppSecret, WOLFSPDM_HASH_SIZE);
 }
 
+static void test_peer_key_update(WOLFSPDM_CTX* p, byte op)
+{
+    if (op == SPDM_KEY_UPDATE_OP_UPDATE_KEY) {
+        test_peer_swap_dirs(p);
+        wolfSPDM_DeriveUpdatedKeys(p, 0);
+        test_peer_swap_dirs(p);
+        p->rspSeqNum = 0;
+    }
+    else if (op == SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS) {
+        wolfSPDM_DeriveUpdatedKeys(p, 1);
+        p->reqSeqNum = 0;
+        p->rspSeqNum = 0;
+    }
+}
+#endif /* !WOLFSPDM_NO_KEY_UPDATE */
+
+#if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)
+static const byte test_vca[] = {
+    0x10, 0x84, 0x00, 0x00, 0x10, 0x04, 0x00, 0x00
+};
+static wc_Sha384 g_peerRun;
+static int g_peerRunOpen;
+static int g_peerTamper;
+
+static void test_peer_run_reset(void)
+{
+    if (g_peerRunOpen) {
+        wc_Sha384Free(&g_peerRun);
+        g_peerRunOpen = 0;
+    }
+}
+
+/* Extend the peer's running L1/L2 or M1, started at the VCA */
+static int test_peer_run_add(const byte* req, word32 reqSz, const byte* rsp,
+    word32 rspSz)
+{
+    int rc = 0;
+
+    if (!g_peerRunOpen) {
+        rc = wc_InitSha384(&g_peerRun);
+        if (rc == 0) {
+            g_peerRunOpen = 1;
+            rc = wc_Sha384Update(&g_peerRun, test_vca, sizeof(test_vca));
+        }
+    }
+    if (rc == 0) {
+        rc = wc_Sha384Update(&g_peerRun, req, reqSz);
+    }
+    if (rc == 0) {
+        rc = wc_Sha384Update(&g_peerRun, rsp, rspSz);
+    }
+    return rc;
+}
+
+/* Close the run with this exchange and append the leaf-key signature */
+static int test_peer_sign(const char* label, word32 labelSz, const byte* req,
+    word32 reqSz, byte* rsp, word32* rspSz)
+{
+    byte digest[WOLFSPDM_HASH_SIZE];
+    word32 sigSz = WOLFSPDM_ECC_SIG_SIZE;
+    int rc;
+
+    rc = test_peer_run_add(req, reqSz, rsp, *rspSz);
+    if (rc == 0) {
+        rc = wc_Sha384Final(&g_peerRun, digest);
+    }
+    test_peer_run_reset();
+    if (rc == 0) {
+        rc = wolfSPDM_BuildSignedHash(g_peer.spdmVersion, label, labelSz,
+            digest, digest);
+    }
+    if (rc == 0) {
+        rc = wolfSPDM_SignHash(&g_peer, digest, sizeof(digest),
+            rsp + *rspSz, &sigSz);
+    }
+    if (rc == 0) {
+        if (g_peerTamper) {
+            rsp[*rspSz] ^= 0x01;
+        }
+        *rspSz += sigSz;
+    }
+    return rc;
+}
+
+/* Nonce(32) of 0x5A, optional zero summary hash, empty OpaqueData and the
+ * 1.3+ RequesterContext echo */
+static word32 test_rsp_tail(const byte* req, word32 reqSz, byte* rsp,
+    word32 n, word32 summarySz)
+{
+    XMEMSET(rsp + n, 0x5A, 32);
+    n += 32;
+    XMEMSET(rsp + n, 0, summarySz + 2);
+    n += summarySz + 2;
+    if (req[0] >= SPDM_VERSION_13) {
+        XMEMCPY(rsp + n, req + reqSz - 8, 8);
+        n += 8;
+    }
+    return n;
+}
+#endif
+
+#ifndef WOLFSPDM_NO_MEAS
+/* One DMTF block: index 1, type 1, value DE AD BE EF */
+static const byte test_meas_block[] = {
+    0x01, SPDM_MEAS_SPEC_DMTF, 0x07, 0x00, 0x01, 0x04, 0x00,
+    0xDE, 0xAD, 0xBE, 0xEF
+};
+
+/* Unsigned MEASUREMENTS for req; TOTAL_NUMBER carries no blocks */
+static word32 test_meas_rsp(const byte* req, word32 reqSz, byte* rsp)
+{
+    int all = (req[3] != SPDM_MEAS_OPERATION_TOTAL_NUMBER);
+    word32 n = 8;
+
+    rsp[0] = req[0];
+    rsp[1] = SPDM_MEASUREMENTS;
+    rsp[2] = all ? 0 : 1;
+    rsp[3] = 0;
+    rsp[4] = all ? 1 : 0;
+    rsp[5] = all ? (byte)sizeof(test_meas_block) : 0;
+    rsp[6] = 0;
+    rsp[7] = 0;
+    if (all) {
+        XMEMCPY(rsp + n, test_meas_block, sizeof(test_meas_block));
+        n += (word32)sizeof(test_meas_block);
+    }
+    return test_rsp_tail(req, reqSz, rsp, n, 0);
+}
+#endif
+
+#ifndef WOLFSPDM_NO_CHALLENGE
+/* CHALLENGE_AUTH for req up to its signature */
+static word32 test_chal_rsp(const WOLFSPDM_CTX* ctx, const byte* req,
+    word32 reqSz, byte* rsp)
+{
+    rsp[0] = req[0];
+    rsp[1] = SPDM_CHALLENGE_AUTH;
+    rsp[2] = req[2];
+    rsp[3] = 0x01;
+    XMEMCPY(rsp + 4, ctx->certChainHash, WOLFSPDM_HASH_SIZE);
+    return test_rsp_tail(req, reqSz, rsp, 4 + WOLFSPDM_HASH_SIZE,
+        (req[3] != SPDM_MEAS_SUMMARY_HASH_NONE) ? WOLFSPDM_HASH_SIZE : 0);
+}
+#endif
+
 static int test_peer_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf, word32 txSz,
     byte* rxBuf, word32* rxSz, void* userCtx)
 {
     WOLFSPDM_CTX* p = (WOLFSPDM_CTX*)userCtx;
-    byte req[32];
-    byte rsp[4];
+    byte req[64];
+    byte rsp[512];
     word32 reqSz = sizeof(req);
+    word32 rspSz = 4;
+    int clear = (txSz > 0 && txBuf[0] >= 0x10 && txBuf[0] <= 0x1F);
+    int rc = 0;
 
     (void)ctx;
-    if (wolfSPDM_DecryptInternal(p, txBuf, txSz, req, &reqSz) != 0 ||
-            reqSz < 4) {
+    if (clear && txSz <= sizeof(req)) {
+        XMEMCPY(req, txBuf, txSz);
+        reqSz = txSz;
+    }
+    else if (clear ||
+            wolfSPDM_DecryptInternal(p, txBuf, txSz, req, &reqSz) != 0) {
         return -1;
     }
-    rsp[0] = req[0];
-    rsp[2] = req[2];
-    rsp[3] = req[3];
-    if (g_peerRejects) {
-        rsp[1] = SPDM_ERROR;
-        rsp[2] = SPDM_ERROR_BUSY;
-        rsp[3] = 0;
+    if (reqSz < 4) {
+        return -1;
     }
+#ifndef WOLFSPDM_NO_MEAS
+    if (req[1] != SPDM_GET_MEASUREMENTS) {
+        test_peer_run_reset();
+    }
+#endif
+
+    rsp[0] = req[0];
+    rsp[1] = SPDM_ERROR;
+    rsp[2] = SPDM_ERROR_UNSUPPORTED_REQUEST;
+    rsp[3] = 0;
+    if (g_peerRejects) {
+        rsp[2] = SPDM_ERROR_BUSY;
+    }
+#ifndef WOLFSPDM_NO_KEY_UPDATE
     else if (req[1] == SPDM_KEY_UPDATE) {
         rsp[1] = SPDM_KEY_UPDATE_ACK;
-        if (req[2] == SPDM_KEY_UPDATE_OP_UPDATE_KEY) {
-            test_peer_swap_dirs(p);
-            wolfSPDM_DeriveUpdatedKeys(p, 0);
-            test_peer_swap_dirs(p);
-            p->rspSeqNum = 0;
-        }
-        else if (req[2] == SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS) {
-            wolfSPDM_DeriveUpdatedKeys(p, 1);
-            p->reqSeqNum = 0;
-            p->rspSeqNum = 0;
-        }
+        rsp[2] = req[2];
+        rsp[3] = req[3];
+        test_peer_key_update(p, req[2]);
     }
+#endif
 #ifndef WOLFSPDM_NO_HEARTBEAT
     else if (req[1] == SPDM_HEARTBEAT) {
         rsp[1] = SPDM_HEARTBEAT_ACK;
         rsp[2] = 0;
-        rsp[3] = 0;
     }
 #endif
-    else {
+#ifndef WOLFSPDM_NO_MEAS
+    else if (req[1] == SPDM_GET_MEASUREMENTS) {
+        rspSz = test_meas_rsp(req, reqSz, rsp);
+        if (req[2] & SPDM_MEAS_REQUEST_SIG_BIT) {
+            rc = test_peer_sign("responder-measurements signing", 30,
+                req, reqSz, rsp, &rspSz);
+        }
+        else {
+            rc = test_peer_run_add(req, reqSz, rsp, rspSz);
+        }
+    }
+#endif
+#ifndef WOLFSPDM_NO_CHALLENGE
+    else if (req[1] == SPDM_CHALLENGE) {
+        /* No DIGESTS/CERTIFICATE crossed the loopback, so M1 is VCA + C */
+        test_peer_run_reset();
+        rspSz = test_chal_rsp(ctx, req, reqSz, rsp);
+        rc = test_peer_sign("responder-challenge_auth signing", 32,
+            req, reqSz, rsp, &rspSz);
+    }
+#endif
+    if (rc != 0) {
         return -1;
     }
-    return wolfSPDM_EncryptInternal(p, rsp, sizeof(rsp), rxBuf, rxSz);
+    if (clear) {
+        if (rspSz > *rxSz) {
+            return -1;
+        }
+        XMEMCPY(rxBuf, rsp, rspSz);
+        *rxSz = rspSz;
+        return 0;
+    }
+    return wolfSPDM_EncryptInternal(p, rsp, rspSz, rxBuf, rxSz);
 }
 
 static void test_session_loopback(WOLFSPDM_CTX* ctx)
@@ -3288,8 +3475,10 @@ static void test_session_loopback(WOLFSPDM_CTX* ctx)
     XMEMSET(ctx->rspDataKey, 0x22, WOLFSPDM_AEAD_KEY_SIZE);
     XMEMSET(ctx->reqDataIv, 0x33, WOLFSPDM_AEAD_IV_SIZE);
     XMEMSET(ctx->rspDataIv, 0x44, WOLFSPDM_AEAD_IV_SIZE);
+#ifndef WOLFSPDM_NO_KEY_UPDATE
     XMEMSET(ctx->reqAppSecret, 0x55, WOLFSPDM_HASH_SIZE);
     XMEMSET(ctx->rspAppSecret, 0x66, WOLFSPDM_HASH_SIZE);
+#endif
 #ifndef WOLFSPDM_NO_CERT
     ctx->rspCaps = SPDM_CAP_HBEAT_CAP | SPDM_CAP_KEY_UPD_CAP;
 #endif
@@ -3301,11 +3490,35 @@ static void test_session_loopback(WOLFSPDM_CTX* ctx)
     XMEMCPY(p->rspDataKey, ctx->reqDataKey, WOLFSPDM_AEAD_KEY_SIZE);
     XMEMCPY(p->reqDataIv, ctx->rspDataIv, WOLFSPDM_AEAD_IV_SIZE);
     XMEMCPY(p->rspDataIv, ctx->reqDataIv, WOLFSPDM_AEAD_IV_SIZE);
+#ifndef WOLFSPDM_NO_KEY_UPDATE
     XMEMCPY(p->reqAppSecret, ctx->rspAppSecret, WOLFSPDM_HASH_SIZE);
     XMEMCPY(p->rspAppSecret, ctx->reqAppSecret, WOLFSPDM_HASH_SIZE);
+#endif
+#if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)
+    /* The peer signs with the sample leaf key over the shared VCA */
+    XMEMCPY(ctx->transcript, test_vca, sizeof(test_vca));
+    ctx->transcriptLen = (word32)sizeof(test_vca);
+    ctx->vcaLen = ctx->transcriptLen;
+    wolfSPDM_SetResponderPubKey(ctx, test_rsp_leaf_pub,
+        sizeof(test_rsp_leaf_pub));
+    wolfSPDM_SetRequesterKeyPair(p, test_rsp_leaf_priv,
+        sizeof(test_rsp_leaf_priv), test_rsp_leaf_pub,
+        sizeof(test_rsp_leaf_pub));
+    g_peerRunOpen = 0;
+    g_peerTamper = 0;
+#endif
+#ifndef WOLFSPDM_NO_MEAS
+    ctx->rspCaps |= SPDM_CAP_MEAS_CAP_SIG;
+#endif
+#ifndef WOLFSPDM_NO_CHALLENGE
+    ctx->rspCaps |= SPDM_CAP_CHAL_CAP;
+#endif
     g_peerRejects = 0;
     wolfSPDM_SetIO(ctx, test_peer_io_cb, p);
 }
+#endif /* loopback */
+
+#ifndef WOLFSPDM_NO_KEY_UPDATE
 
 static int test_key_update_loopback(void)
 {
@@ -3363,6 +3576,218 @@ static int test_key_update_loopback(void)
     TEST_PASS();
 }
 #endif /* !WOLFSPDM_NO_KEY_UPDATE */
+
+#ifndef WOLFSPDM_NO_MEAS
+static int test_measurements_msgs(void)
+{
+    byte req[64];
+    byte rsp[256];
+    byte err[] = {0x12, SPDM_ERROR, SPDM_ERROR_BUSY, 0, 0, 0, 0, 0};
+    word32 reqSz = sizeof(req);
+    word32 n;
+    word32 sigOff = 0;
+    TEST_CTX_SETUP_V12();
+
+    printf("test_measurements_msgs...\n");
+    ASSERT_SUCCESS(wolfSPDM_BuildGetMeasurements(ctx, req, &reqSz,
+        SPDM_MEAS_OPERATION_ALL, 1));
+    ASSERT_EQ(reqSz, 37, "1.2 signed request is 37 bytes");
+    ASSERT_EQ(req[2], SPDM_MEAS_REQUEST_SIG_BIT, "Signature bit");
+    ctx->spdmVersion = SPDM_VERSION_13;
+    reqSz = sizeof(req);
+    ASSERT_SUCCESS(wolfSPDM_BuildGetMeasurements(ctx, req, &reqSz,
+        SPDM_MEAS_OPERATION_ALL, 0));
+    ASSERT_EQ(reqSz, 12, "1.3 unsigned request carries RequesterContext");
+    reqSz = 44;
+    ASSERT_EQ(wolfSPDM_BuildGetMeasurements(ctx, req, &reqSz,
+        SPDM_MEAS_OPERATION_ALL, 1), WOLFSPDM_E_BUFFER_SMALL,
+        "1.3 signed request needs 45 bytes");
+
+    /* 1.3 unsigned response echoing the RequesterContext */
+    reqSz = sizeof(req);
+    ASSERT_SUCCESS(wolfSPDM_BuildGetMeasurements(ctx, req, &reqSz,
+        SPDM_MEAS_OPERATION_ALL, 0));
+    n = test_meas_rsp(req, reqSz, rsp);
+    ASSERT_SUCCESS(wolfSPDM_ParseMeasurements(ctx, req, reqSz, rsp, n,
+        &sigOff));
+    ASSERT_EQ(sigOff, n, "Unsigned response has no signature");
+    rsp[n] = 0;
+    ASSERT_EQ(wolfSPDM_ParseMeasurements(ctx, req, reqSz, rsp, n + 1,
+        &sigOff), WOLFSPDM_E_MEASUREMENT, "Trailing byte");
+    rsp[n - 1] ^= 0xFF;
+    ASSERT_EQ(wolfSPDM_ParseMeasurements(ctx, req, reqSz, rsp, n, &sigOff),
+        WOLFSPDM_E_MEASUREMENT, "RequesterContext echo mismatch");
+    rsp[n - 1] ^= 0xFF;
+    rsp[4] = 2;
+    ASSERT_EQ(wolfSPDM_ParseMeasurements(ctx, req, reqSz, rsp, n, &sigOff),
+        WOLFSPDM_E_MEASUREMENT, "Block count must fill the record");
+    rsp[4] = 1;
+    rsp[6] = 0x10;
+    ASSERT_EQ(wolfSPDM_ParseMeasurements(ctx, req, reqSz, rsp, n, &sigOff),
+        WOLFSPDM_E_MEASUREMENT, "Record longer than the response");
+    rsp[6] = 0;
+    ASSERT_EQ(wolfSPDM_ParseMeasurements(ctx, req, reqSz, rsp, n - 1,
+        &sigOff), WOLFSPDM_E_MEASUREMENT, "Truncated tail");
+    ASSERT_EQ(wolfSPDM_ParseMeasurements(ctx, req, reqSz, err, sizeof(err),
+        &sigOff), WOLFSPDM_E_PEER_ERROR, "ERROR response");
+    ASSERT_EQ(wolfSPDM_GetMeasurements(ctx, SPDM_MEAS_OPERATION_ALL, 0),
+        WOLFSPDM_E_NOT_CONNECTED, "Measurements need a session");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
+static int test_measurements_loopback(void)
+{
+    static const byte expect[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    byte idx = 0;
+    byte type = 0;
+    byte val[16];
+    word32 valSz = sizeof(val);
+    TEST_CTX_SETUP();
+
+    printf("test_measurements_loopback...\n");
+    test_session_loopback(ctx);
+
+    ASSERT_SUCCESS(wolfSPDM_GetMeasurements(ctx, SPDM_MEAS_OPERATION_ALL, 1));
+    ASSERT_EQ(wolfSPDM_GetMeasurementCount(ctx), 1, "One block");
+    ASSERT_SUCCESS(wolfSPDM_GetMeasurementBlock(ctx, 0, &idx, &type, val,
+        &valSz));
+    ASSERT_EQ(idx, 1, "Block index");
+    ASSERT_EQ(type, 1, "DMTF value type");
+    ASSERT_EQ(valSz, 4, "Value size");
+    ASSERT_EQ(memcmp(val, expect, sizeof(expect)), 0, "Value");
+    valSz = 2;
+    ASSERT_EQ(wolfSPDM_GetMeasurementBlock(ctx, 0, &idx, &type, val, &valSz),
+        WOLFSPDM_E_BUFFER_SMALL, "Small value buffer");
+    valSz = sizeof(val);
+    ASSERT_EQ(wolfSPDM_GetMeasurementBlock(ctx, 1, &idx, &type, val, &valSz),
+        WOLFSPDM_E_INVALID_ARG, "Block out of range");
+
+    /* Unsigned exchanges before a signed one are part of its L1/L2 */
+    ASSERT_SUCCESS(wolfSPDM_GetMeasurements(ctx,
+        SPDM_MEAS_OPERATION_TOTAL_NUMBER, 0));
+    ASSERT_EQ(wolfSPDM_GetMeasurementCount(ctx), 0, "TOTAL_NUMBER has none");
+    ASSERT_SUCCESS(wolfSPDM_GetMeasurements(ctx, SPDM_MEAS_OPERATION_ALL, 0));
+    ASSERT_SUCCESS(wolfSPDM_GetMeasurements(ctx, SPDM_MEAS_OPERATION_ALL, 1));
+#ifndef WOLFSPDM_NO_HEARTBEAT
+    /* Any other request restarts L1/L2 on both sides */
+    ASSERT_SUCCESS(wolfSPDM_GetMeasurements(ctx, SPDM_MEAS_OPERATION_ALL, 0));
+    ASSERT_SUCCESS(wolfSPDM_Heartbeat(ctx));
+    ASSERT_SUCCESS(wolfSPDM_GetMeasurements(ctx, SPDM_MEAS_OPERATION_ALL, 1));
+#endif
+
+    g_peerTamper = 1;
+    ASSERT_EQ(wolfSPDM_GetMeasurements(ctx, SPDM_MEAS_OPERATION_ALL, 1),
+        WOLFSPDM_E_BAD_SIGNATURE, "Tampered signature");
+    ASSERT_EQ(wolfSPDM_GetMeasurementCount(ctx), 0,
+        "A failed fetch exposes no blocks");
+    g_peerTamper = 0;
+    ASSERT_SUCCESS(wolfSPDM_GetMeasurements(ctx, SPDM_MEAS_OPERATION_ALL, 1));
+
+    ctx->rspCaps &= ~(word32)SPDM_CAP_MEAS_CAP_SIG;
+    ASSERT_EQ(wolfSPDM_GetMeasurements(ctx, SPDM_MEAS_OPERATION_ALL, 1),
+        WOLFSPDM_E_CAPS_MISMATCH, "Responder without MEAS_CAP");
+
+    wolfSPDM_Free(&g_peer);
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+#endif /* !WOLFSPDM_NO_MEAS */
+
+#ifndef WOLFSPDM_NO_CHALLENGE
+static int test_challenge_msgs(void)
+{
+    byte req[64];
+    byte rsp[256];
+    word32 reqSz = sizeof(req);
+    word32 n;
+    word32 sigOff = 0;
+    TEST_CTX_SETUP_V12();
+
+    printf("test_challenge_msgs...\n");
+    ASSERT_SUCCESS(wolfSPDM_BuildChallenge(ctx, req, &reqSz, 0,
+        SPDM_MEAS_SUMMARY_HASH_NONE));
+    ASSERT_EQ(reqSz, 36, "1.2 CHALLENGE is 36 bytes");
+    reqSz = sizeof(req);
+    ASSERT_EQ(wolfSPDM_BuildChallenge(ctx, req, &reqSz, 8,
+        SPDM_MEAS_SUMMARY_HASH_NONE), WOLFSPDM_E_INVALID_ARG, "Slot 8");
+    ctx->spdmVersion = SPDM_VERSION_13;
+    reqSz = 43;
+    ASSERT_EQ(wolfSPDM_BuildChallenge(ctx, req, &reqSz, 0,
+        SPDM_MEAS_SUMMARY_HASH_NONE), WOLFSPDM_E_BUFFER_SMALL,
+        "1.3 CHALLENGE needs 44 bytes");
+
+    reqSz = sizeof(req);
+    ASSERT_SUCCESS(wolfSPDM_BuildChallenge(ctx, req, &reqSz, 0,
+        SPDM_MEAS_SUMMARY_HASH_TCB));
+    XMEMSET(ctx->certChainHash, 0xC7, WOLFSPDM_HASH_SIZE);
+    n = test_chal_rsp(ctx, req, reqSz, rsp);
+    XMEMSET(rsp + n, 0, WOLFSPDM_ECC_SIG_SIZE);
+    ASSERT_SUCCESS(wolfSPDM_ParseChallengeAuth(ctx, req, reqSz, rsp,
+        n + WOLFSPDM_ECC_SIG_SIZE, &sigOff));
+    ASSERT_EQ(sigOff, n, "Signature follows the RequesterContext");
+    ASSERT_EQ(wolfSPDM_ParseChallengeAuth(ctx, req, reqSz, rsp, n, &sigOff),
+        WOLFSPDM_E_CHALLENGE, "Missing signature");
+    rsp[n - 1] ^= 0xFF;
+    ASSERT_EQ(wolfSPDM_ParseChallengeAuth(ctx, req, reqSz, rsp,
+        n + WOLFSPDM_ECC_SIG_SIZE, &sigOff), WOLFSPDM_E_CHALLENGE,
+        "RequesterContext echo mismatch");
+    rsp[n - 1] ^= 0xFF;
+    rsp[2] = 1;
+    ASSERT_EQ(wolfSPDM_ParseChallengeAuth(ctx, req, reqSz, rsp,
+        n + WOLFSPDM_ECC_SIG_SIZE, &sigOff), WOLFSPDM_E_CHALLENGE,
+        "Slot echo mismatch");
+    rsp[2] = 0;
+    rsp[4] ^= 0x01;
+    ASSERT_EQ(wolfSPDM_ParseChallengeAuth(ctx, req, reqSz, rsp,
+        n + WOLFSPDM_ECC_SIG_SIZE, &sigOff), WOLFSPDM_E_CHALLENGE,
+        "CertChainHash mismatch");
+    rsp[4] ^= 0x01;
+    req[3] = SPDM_MEAS_SUMMARY_HASH_NONE;
+    ASSERT_EQ(wolfSPDM_ParseChallengeAuth(ctx, req, reqSz, rsp,
+        n + WOLFSPDM_ECC_SIG_SIZE, &sigOff), WOLFSPDM_E_CHALLENGE,
+        "Summary hash present without being requested");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
+static int test_challenge_loopback(void)
+{
+    TEST_CTX_SETUP();
+
+    printf("test_challenge_loopback...\n");
+    test_session_loopback(ctx);
+    ASSERT_SUCCESS(test_load_sample_chain(ctx));
+    ASSERT_SUCCESS(wolfSPDM_Sha384Hash(ctx->certChainHash, ctx->certChain,
+        ctx->certChainLen, NULL, 0, NULL, 0));
+    ASSERT_SUCCESS(wolfSPDM_SetTrustedCAs(ctx, test_ca_cert_der,
+        sizeof(test_ca_cert_der)));
+    ASSERT_EQ(wolfSPDM_Challenge(ctx, 0, SPDM_MEAS_SUMMARY_HASH_NONE),
+        WOLFSPDM_E_BAD_STATE, "M1 starts at NEGOTIATE_ALGORITHMS");
+    ASSERT_SUCCESS(wolfSPDM_M1Start(ctx));
+
+    ASSERT_SUCCESS(wolfSPDM_Challenge(ctx, 0, SPDM_MEAS_SUMMARY_HASH_NONE));
+    ASSERT_SUCCESS(wolfSPDM_Challenge(ctx, 0, SPDM_MEAS_SUMMARY_HASH_ALL));
+    ASSERT_EQ(wolfSPDM_Challenge(ctx, 1, SPDM_MEAS_SUMMARY_HASH_NONE),
+        WOLFSPDM_E_BAD_STATE, "No chain held for slot 1");
+
+    g_peerTamper = 1;
+    ASSERT_EQ(wolfSPDM_Challenge(ctx, 0, SPDM_MEAS_SUMMARY_HASH_NONE),
+        WOLFSPDM_E_BAD_SIGNATURE, "Tampered signature");
+    g_peerTamper = 0;
+
+    ASSERT_SUCCESS(wolfSPDM_M1Start(ctx));
+    ctx->rspCaps &= ~(word32)SPDM_CAP_CHAL_CAP;
+    ASSERT_EQ(wolfSPDM_Challenge(ctx, 0, SPDM_MEAS_SUMMARY_HASH_NONE),
+        WOLFSPDM_E_CAPS_MISMATCH, "Responder without CHAL_CAP");
+
+    wolfSPDM_Free(&g_peer);
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+#endif /* !WOLFSPDM_NO_CHALLENGE */
 
 int main(void)
 {
@@ -3513,6 +3938,14 @@ int main(void)
     test_key_update_msgs();
     test_derive_updated_keys();
     test_key_update_loopback();
+#endif
+#ifndef WOLFSPDM_NO_MEAS
+    test_measurements_msgs();
+    test_measurements_loopback();
+#endif
+#ifndef WOLFSPDM_NO_CHALLENGE
+    test_challenge_msgs();
+    test_challenge_loopback();
 #endif
 
 #ifdef WOLFSPDM_RESPONDER

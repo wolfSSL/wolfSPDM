@@ -193,6 +193,13 @@ extern "C" {
 #if defined(WOLFSPDM_PROFILE_TPM) && !defined(WOLFSPDM_NO_KEY_UPDATE)
     #define WOLFSPDM_NO_KEY_UPDATE
 #endif
+/* Attestation needs the certificate flow (VCA transcript, chain hash) */
+#if defined(WOLFSPDM_NO_CERT) && !defined(WOLFSPDM_NO_MEAS)
+    #define WOLFSPDM_NO_MEAS
+#endif
+#if defined(WOLFSPDM_NO_CERT) && !defined(WOLFSPDM_NO_CHALLENGE)
+    #define WOLFSPDM_NO_CHALLENGE
+#endif
 
 /* ----- Session Keep-Alive and Key Rotation ----- */
 
@@ -266,6 +273,32 @@ extern "C" {
 #define WOLFSPDM_MAX_TRUSTED_CA     2048
 #endif
 #endif /* !WOLFSPDM_NO_CERT */
+
+/* ----- Attestation: measurements and challenge ----- */
+
+#ifndef WOLFSPDM_NO_MEAS
+#define SPDM_GET_MEASUREMENTS       0xE0
+#define SPDM_MEASUREMENTS           0x60
+#define SPDM_CAP_MEAS_CAP_NO_SIG    0x00000008
+#define SPDM_CAP_MEAS_CAP_SIG       0x00000010
+#define SPDM_MEAS_REQUEST_SIG_BIT   0x01
+#define SPDM_MEAS_OPERATION_TOTAL_NUMBER 0x00
+#define SPDM_MEAS_OPERATION_ALL     0xFF
+#define SPDM_MEAS_SPEC_DMTF         0x01
+#define WOLFSPDM_MEAS_BLOCK_HDR_SZ  4   /* Index + MeasSpec + Size(2) */
+#ifndef WOLFSPDM_MAX_MEAS_RECORD
+#define WOLFSPDM_MAX_MEAS_RECORD    1024
+#endif
+#endif /* !WOLFSPDM_NO_MEAS */
+
+#ifndef WOLFSPDM_NO_CHALLENGE
+#define SPDM_CHALLENGE              0x83
+#define SPDM_CHALLENGE_AUTH         0x03
+#define SPDM_CAP_CHAL_CAP           0x00000004
+#define SPDM_MEAS_SUMMARY_HASH_NONE 0x00
+#define SPDM_MEAS_SUMMARY_HASH_TCB  0x01
+#define SPDM_MEAS_SUMMARY_HASH_ALL  0xFF
+#endif /* !WOLFSPDM_NO_CHALLENGE */
 
 /* ----- TCG Build Option ----- */
 

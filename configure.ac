@@ -100,6 +100,24 @@ if test "x$enable_heartbeat" = "xno"; then
     AC_DEFINE([WOLFSPDM_NO_HEARTBEAT], [1], [Disable HEARTBEAT])
 fi
 
+AC_ARG_ENABLE([meas],
+    [AS_HELP_STRING([--disable-meas], [Disable GET_MEASUREMENTS attestation (default: enabled)])],
+    [enable_meas=$enableval],
+    [enable_meas=yes])
+
+if test "x$enable_meas" = "xno"; then
+    AC_DEFINE([WOLFSPDM_NO_MEAS], [1], [Disable GET_MEASUREMENTS])
+fi
+
+AC_ARG_ENABLE([challenge],
+    [AS_HELP_STRING([--disable-challenge], [Disable CHALLENGE attestation (default: enabled)])],
+    [enable_challenge=$enableval],
+    [enable_challenge=yes])
+
+if test "x$enable_challenge" = "xno"; then
+    AC_DEFINE([WOLFSPDM_NO_CHALLENGE], [1], [Disable CHALLENGE])
+fi
+
 AC_ARG_ENABLE([key-update],
     [AS_HELP_STRING([--disable-key-update], [Disable KEY_UPDATE session key rotation (default: enabled)])],
     [enable_key_update=$enableval],
@@ -180,6 +198,8 @@ echo "  Version:     $PACKAGE_VERSION"
 echo "  Debug:       $enable_debug"
 echo "  Dynamic mem: $enable_dynamic_mem"
 echo "  Standard:    $enable_cert"
+echo "  Meas:        $enable_meas"
+echo "  Challenge:   $enable_challenge"
 echo "  Heartbeat:   $enable_heartbeat"
 echo "  Key update:  $enable_key_update"
 echo "  TCG:         $enable_tcg"

@@ -190,12 +190,20 @@ int wolfSPDM_NegotiateAlgorithms(WOLFSPDM_CTX* ctx)
 {
     byte txBuf[48];
     byte rxBuf[128];
+    int rc;
 
     if (ctx == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
-    return wolfSPDM_ExchangeMsg(ctx, wolfSPDM_BuildNegotiateAlgorithms,
+    rc = wolfSPDM_ExchangeMsg(ctx, wolfSPDM_BuildNegotiateAlgorithms,
         wolfSPDM_ParseAlgorithms, txBuf, sizeof(txBuf), rxBuf, sizeof(rxBuf));
+    if (rc == WOLFSPDM_SUCCESS) {
+        ctx->vcaLen = ctx->transcriptLen;
+    #ifndef WOLFSPDM_NO_CHALLENGE
+        rc = wolfSPDM_M1Start(ctx);
+    #endif
+    }
+    return rc;
 }
 
 /* ----- GET_DIGESTS / GET_CERTIFICATE (not part of the TH transcript) ----- */
@@ -230,6 +238,11 @@ int wolfSPDM_GetDigests(WOLFSPDM_CTX* ctx)
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_ParseDigests(ctx, rxBuf, rxSz);
     }
+#ifndef WOLFSPDM_NO_CHALLENGE
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_M1Add(ctx, txBuf, sizeof(txBuf), rxBuf, rxSz);
+    }
+#endif
     return rc;
 }
 
@@ -298,6 +311,12 @@ int wolfSPDM_GetCertificate(WOLFSPDM_CTX* ctx, int slotId)
             rc = wolfSPDM_ParseCertificate(ctx, rxBuf, rxSz, &portionLen,
                 &remainderLen);
         }
+    #ifndef WOLFSPDM_NO_CHALLENGE
+        if (rc == WOLFSPDM_SUCCESS) {
+            rc = wolfSPDM_M1Add(ctx, txBuf, sizeof(txBuf), rxBuf,
+                8u + portionLen);
+        }
+    #endif
         /* Every non-final portion must make progress */
         if (rc == WOLFSPDM_SUCCESS && portionLen == 0 && remainderLen > 0) {
             rc = WOLFSPDM_E_CERT_FAIL;
@@ -562,6 +581,9 @@ int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx)
     ctx->state = WOLFSPDM_STATE_INIT;
     ctx->lastPeerErrorCode = 0;
     wolfSPDM_TranscriptReset(ctx);
+#if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)
+    wolfSPDM_AttestFree(ctx);
+#endif
 
     SPDM_CONNECT_STEP(ctx, "GET_VERSION\n", wolfSPDM_GetVersion(ctx));
     SPDM_CONNECT_STEP(ctx, "GET_CAPABILITIES\n",

@@ -12,7 +12,7 @@ libwolfspdm_la_SOURCES = \
     src/spdm_transcript.c
 
 if BUILD_CERT
-libwolfspdm_la_SOURCES += src/spdm_standard.c
+libwolfspdm_la_SOURCES += src/spdm_standard.c src/spdm_attest.c
 endif
 if BUILD_TCG
 libwolfspdm_la_SOURCES += src/spdm_tcg.c

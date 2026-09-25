@@ -409,6 +409,10 @@ int wolfSPDM_Disconnect(WOLFSPDM_CTX* ctx)
     wc_ForceZero(ctx->rspDataKey, sizeof(ctx->rspDataKey));
     wc_ForceZero(ctx->reqDataIv, sizeof(ctx->reqDataIv));
     wc_ForceZero(ctx->rspDataIv, sizeof(ctx->rspDataIv));
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+    wc_ForceZero(ctx->reqAppSecret, sizeof(ctx->reqAppSecret));
+    wc_ForceZero(ctx->rspAppSecret, sizeof(ctx->rspAppSecret));
+#endif
     /* Handshake keys */
     wc_ForceZero(ctx->reqHsSecret, sizeof(ctx->reqHsSecret));
     wc_ForceZero(ctx->rspHsSecret, sizeof(ctx->rspHsSecret));
@@ -608,6 +612,7 @@ const char* wolfSPDM_GetErrorString(int error)
         case WOLFSPDM_E_CAPS_MISMATCH:    return "Capability mismatch";
         case WOLFSPDM_E_ALGO_MISMATCH:    return "Algorithm mismatch";
         case WOLFSPDM_E_CERT_PARSE:       return "Certificate parse failed";
+        case WOLFSPDM_E_KEY_UPDATE:       return "Key update failed";
         default:                          return "Unknown error";
     }
 }

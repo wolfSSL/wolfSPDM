@@ -57,6 +57,7 @@ enum WOLFSPDM_ERROR {
     WOLFSPDM_E_CAPS_MISMATCH    = -22,  /* Capability negotiation failed */
     WOLFSPDM_E_ALGO_MISMATCH    = -23,  /* Algorithm negotiation failed */
     WOLFSPDM_E_CERT_PARSE       = -24,  /* Certificate could not be parsed */
+    WOLFSPDM_E_KEY_UPDATE       = -25,  /* Key update failed */
 };
 
 /* Get human-readable error string */

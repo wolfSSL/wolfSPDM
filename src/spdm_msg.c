@@ -560,3 +560,58 @@ int wolfSPDM_ParseFinishRsp(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufSz)
 
 /* PSK message builders/parsers moved to spdm_psk.c */
 
+#ifndef WOLFSPDM_NO_HEARTBEAT
+int wolfSPDM_BuildHeartbeat(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
+{
+    return wolfSPDM_BuildSimpleMsg(ctx, SPDM_HEARTBEAT, buf, bufSz);
+}
+
+int wolfSPDM_ParseHeartbeatAck(WOLFSPDM_CTX* ctx, const byte* buf,
+    word32 bufSz)
+{
+    SPDM_CHECK_PARSE_ARGS(ctx, buf, bufSz, 4);
+    SPDM_CHECK_RESPONSE(ctx, buf, bufSz, SPDM_HEARTBEAT_ACK,
+        WOLFSPDM_E_PEER_ERROR);
+    if (bufSz != 4 || buf[0] != ctx->spdmVersion) {
+        return WOLFSPDM_E_PEER_ERROR;
+    }
+    return WOLFSPDM_SUCCESS;
+}
+#endif /* !WOLFSPDM_NO_HEARTBEAT */
+
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+int wolfSPDM_BuildKeyUpdate(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz,
+    byte operation, byte* tag)
+{
+    int rc;
+
+    SPDM_CHECK_BUILD_ARGS(ctx, buf, bufSz, 4);
+    if (tag == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+
+    rc = wolfSPDM_GetRandom(ctx, tag, 1);
+    if (rc == WOLFSPDM_SUCCESS) {
+        buf[0] = ctx->spdmVersion;
+        buf[1] = SPDM_KEY_UPDATE;
+        buf[2] = operation;
+        buf[3] = *tag;
+        *bufSz = 4;
+    }
+    return rc;
+}
+
+int wolfSPDM_ParseKeyUpdateAck(WOLFSPDM_CTX* ctx, const byte* buf,
+    word32 bufSz, byte operation, byte tag)
+{
+    SPDM_CHECK_PARSE_ARGS(ctx, buf, bufSz, 4);
+    SPDM_CHECK_RESPONSE(ctx, buf, bufSz, SPDM_KEY_UPDATE_ACK,
+        WOLFSPDM_E_KEY_UPDATE);
+    if (bufSz != 4 || buf[0] != ctx->spdmVersion || buf[2] != operation ||
+            buf[3] != tag) {
+        wolfSPDM_DebugPrint(ctx, "KEY_UPDATE_ACK mismatch\n");
+        return WOLFSPDM_E_KEY_UPDATE;
+    }
+    return WOLFSPDM_SUCCESS;
+}
+#endif /* !WOLFSPDM_NO_KEY_UPDATE */

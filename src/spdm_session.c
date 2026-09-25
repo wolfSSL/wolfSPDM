@@ -153,3 +153,120 @@ int wolfSPDM_Finish(WOLFSPDM_CTX* ctx)
     return rc;
 }
 
+#if !defined(WOLFSPDM_NO_HEARTBEAT) || !defined(WOLFSPDM_NO_KEY_UPDATE)
+/* Standard mode checks the responder's CAPABILITIES; TCG profiles fix them */
+static int wolfSPDM_CheckSessionCap(const WOLFSPDM_CTX* ctx, word32 cap)
+{
+    if (ctx == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    if (ctx->state != WOLFSPDM_STATE_CONNECTED) {
+        return WOLFSPDM_E_NOT_CONNECTED;
+    }
+#ifndef WOLFSPDM_NO_CERT
+    if (!wolfSPDM_IsTcgMode(ctx) && (ctx->rspCaps & cap) == 0) {
+        return WOLFSPDM_E_CAPS_MISMATCH;
+    }
+#else
+    (void)cap;
+#endif
+    return WOLFSPDM_SUCCESS;
+}
+#endif
+
+#ifndef WOLFSPDM_NO_HEARTBEAT
+int wolfSPDM_Heartbeat(WOLFSPDM_CTX* ctx)
+{
+    byte txBuf[4];
+    byte rxBuf[32];
+    word32 txSz = sizeof(txBuf);
+    word32 rxSz = sizeof(rxBuf);
+    int rc;
+
+    rc = wolfSPDM_CheckSessionCap(ctx, SPDM_CAP_HBEAT_CAP);
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_BuildHeartbeat(ctx, txBuf, &txSz);
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_SecuredExchange(ctx, txBuf, txSz, rxBuf, &rxSz);
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_ParseHeartbeatAck(ctx, rxBuf, rxSz);
+    }
+    return rc;
+}
+#endif /* !WOLFSPDM_NO_HEARTBEAT */
+
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+int wolfSPDM_KeyUpdate(WOLFSPDM_CTX* ctx, int updateAll)
+{
+    byte txBuf[4];
+    byte rxBuf[32];
+    byte encBuf[64];
+    byte rawBuf[64];
+    word32 txSz = sizeof(txBuf);
+    word32 rxSz = sizeof(rxBuf);
+    word32 encSz = sizeof(encBuf);
+    word32 rawSz = sizeof(rawBuf);
+    byte op;
+    byte tag = 0;
+    int rotated = 0;
+    int rc;
+
+    op = updateAll ? SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS :
+                     SPDM_KEY_UPDATE_OP_UPDATE_KEY;
+
+    rc = wolfSPDM_CheckSessionCap(ctx, SPDM_CAP_KEY_UPD_CAP);
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_BuildKeyUpdate(ctx, txBuf, &txSz, op, &tag);
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_EncryptInternal(ctx, txBuf, txSz, encBuf, &encSz);
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_SendReceive(ctx, encBuf, encSz, rawBuf, &rawSz);
+    }
+    /* A rejection arrives under the current keys, an UpdateAllKeys ACK under
+     * the new ones, so keys rotate only once the response proves it */
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_DecryptInternal(ctx, rawBuf, rawSz, rxBuf, &rxSz);
+        if (rc != WOLFSPDM_SUCCESS && updateAll) {
+            rotated = 1;
+            rc = wolfSPDM_DeriveUpdatedKeys(ctx, 1);
+            ctx->reqSeqNum = 0;
+            ctx->rspSeqNum = 0;
+            rxSz = sizeof(rxBuf);
+            if (rc == WOLFSPDM_SUCCESS) {
+                rc = wolfSPDM_DecryptInternal(ctx, rawBuf, rawSz, rxBuf,
+                    &rxSz);
+            }
+        }
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_ParseKeyUpdateAck(ctx, rxBuf, rxSz, op, tag);
+    }
+    if (rc == WOLFSPDM_SUCCESS && updateAll && !rotated) {
+        rc = WOLFSPDM_E_KEY_UPDATE;
+    }
+    if (rc == WOLFSPDM_SUCCESS && !updateAll) {
+        rc = wolfSPDM_DeriveUpdatedKeys(ctx, 0);
+        ctx->reqSeqNum = 0;
+    }
+
+    if (rc == WOLFSPDM_SUCCESS) {
+        txSz = sizeof(txBuf);
+        rc = wolfSPDM_BuildKeyUpdate(ctx, txBuf, &txSz,
+            SPDM_KEY_UPDATE_OP_VERIFY_NEW_KEY, &tag);
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        rxSz = sizeof(rxBuf);
+        rc = wolfSPDM_SecuredExchange(ctx, txBuf, txSz, rxBuf, &rxSz);
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_ParseKeyUpdateAck(ctx, rxBuf, rxSz,
+            SPDM_KEY_UPDATE_OP_VERIFY_NEW_KEY, tag);
+    }
+
+    return rc;
+}
+#endif /* !WOLFSPDM_NO_KEY_UPDATE */

@@ -266,6 +266,10 @@ int wolfSPDM_DeriveAppDataKeys(WOLFSPDM_CTX* ctx)
             ctx->rspDataKey, ctx->rspDataIv);
     }
     if (rc == WOLFSPDM_SUCCESS) {
+    #ifndef WOLFSPDM_NO_KEY_UPDATE
+        XMEMCPY(ctx->reqAppSecret, reqAppSecret, WOLFSPDM_HASH_SIZE);
+        XMEMCPY(ctx->rspAppSecret, rspAppSecret, WOLFSPDM_HASH_SIZE);
+    #endif
         /* Reset sequence numbers for application phase */
         ctx->reqSeqNum = 0;
         ctx->rspSeqNum = 0;
@@ -282,3 +286,42 @@ int wolfSPDM_DeriveAppDataKeys(WOLFSPDM_CTX* ctx)
     return rc;
 }
 
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+/* Next-generation secret per DSP0277: "traffic upd" label, no context */
+static int wolfSPDM_UpdateDirection(byte spdmVersion, byte* appSecret,
+    byte* key, byte* iv)
+{
+    byte next[WOLFSPDM_HASH_SIZE];
+    int rc;
+
+    rc = wolfSPDM_HkdfExpandLabel(spdmVersion, appSecret, WOLFSPDM_HASH_SIZE,
+        SPDM_LABEL_UPDATE, NULL, 0, next, WOLFSPDM_HASH_SIZE);
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_DeriveKeyIvPair(spdmVersion, next, key, iv);
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        XMEMCPY(appSecret, next, WOLFSPDM_HASH_SIZE);
+    }
+
+    wc_ForceZero(next, sizeof(next));
+    return rc;
+}
+
+int wolfSPDM_DeriveUpdatedKeys(WOLFSPDM_CTX* ctx, int updateAll)
+{
+    int rc;
+
+    if (ctx == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+
+    rc = wolfSPDM_UpdateDirection(ctx->spdmVersion, ctx->reqAppSecret,
+        ctx->reqDataKey, ctx->reqDataIv);
+    if (rc == WOLFSPDM_SUCCESS && updateAll) {
+        rc = wolfSPDM_UpdateDirection(ctx->spdmVersion, ctx->rspAppSecret,
+            ctx->rspDataKey, ctx->rspDataIv);
+    }
+
+    return rc;
+}
+#endif /* !WOLFSPDM_NO_KEY_UPDATE */

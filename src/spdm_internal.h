@@ -156,6 +156,10 @@ struct WOLFSPDM_CTX {
     byte rspDataKey[WOLFSPDM_AEAD_KEY_SIZE];   /* Incoming decryption key */
     byte reqDataIv[WOLFSPDM_AEAD_IV_SIZE];     /* Base IV for outgoing */
     byte rspDataIv[WOLFSPDM_AEAD_IV_SIZE];     /* Base IV for incoming */
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+    byte reqAppSecret[WOLFSPDM_HASH_SIZE];
+    byte rspAppSecret[WOLFSPDM_HASH_SIZE];
+#endif
 
     /* Sequence numbers for IV generation */
     word64 reqSeqNum;           /* Outgoing message sequence */
@@ -415,6 +419,21 @@ WOLFSPDM_TEST_API int wolfSPDM_ParseCertificate(WOLFSPDM_CTX* ctx,
     const byte* buf, word32 bufSz, word16* portionLen, word16* remainderLen);
 WOLFSPDM_TEST_API int wolfSPDM_ValidateCertChain(WOLFSPDM_CTX* ctx);
 WOLFSPDM_LOCAL int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx);
+#endif
+
+#ifndef WOLFSPDM_NO_HEARTBEAT
+WOLFSPDM_TEST_API int wolfSPDM_BuildHeartbeat(WOLFSPDM_CTX* ctx,
+    byte* buf, word32* bufSz);
+WOLFSPDM_TEST_API int wolfSPDM_ParseHeartbeatAck(WOLFSPDM_CTX* ctx,
+    const byte* buf, word32 bufSz);
+#endif
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+WOLFSPDM_TEST_API int wolfSPDM_BuildKeyUpdate(WOLFSPDM_CTX* ctx,
+    byte* buf, word32* bufSz, byte operation, byte* tag);
+WOLFSPDM_TEST_API int wolfSPDM_ParseKeyUpdateAck(WOLFSPDM_CTX* ctx,
+    const byte* buf, word32 bufSz, byte operation, byte tag);
+WOLFSPDM_TEST_API int wolfSPDM_DeriveUpdatedKeys(WOLFSPDM_CTX* ctx,
+    int updateAll);
 #endif
 
 WOLFSPDM_API int wolfSPDM_SendReceive(WOLFSPDM_CTX* ctx,

@@ -3104,6 +3104,266 @@ static int test_validate_cert_chain(void)
 }
 #endif /* !WOLFSPDM_NO_CERT */
 
+#ifndef WOLFSPDM_NO_HEARTBEAT
+static int test_heartbeat_msgs(void)
+{
+    byte buf[16];
+    byte ack[] = {0x12, SPDM_HEARTBEAT_ACK, 0x00, 0x00};
+    byte err[] = {0x12, SPDM_ERROR, SPDM_ERROR_BUSY, 0x00};
+    word32 bufSz = sizeof(buf);
+    TEST_CTX_SETUP_V12();
+
+    printf("test_heartbeat_msgs...\n");
+    ASSERT_SUCCESS(wolfSPDM_BuildHeartbeat(ctx, buf, &bufSz));
+    ASSERT_EQ(bufSz, 4, "HEARTBEAT should be 4 bytes");
+    ASSERT_EQ(buf[1], SPDM_HEARTBEAT, "Code should be 0xE8");
+    bufSz = 2;
+    ASSERT_EQ(wolfSPDM_BuildHeartbeat(ctx, buf, &bufSz),
+        WOLFSPDM_E_BUFFER_SMALL, "Small buffer should fail");
+
+    ASSERT_SUCCESS(wolfSPDM_ParseHeartbeatAck(ctx, ack, sizeof(ack)));
+    ASSERT_EQ(wolfSPDM_ParseHeartbeatAck(ctx, err, sizeof(err)),
+        WOLFSPDM_E_PEER_ERROR, "ERROR should return PEER_ERROR");
+    ASSERT_EQ(wolfSPDM_GetLastPeerError(ctx), SPDM_ERROR_BUSY,
+        "Peer error code should be recorded");
+    ack[0] = 0x13;
+    ASSERT_EQ(wolfSPDM_ParseHeartbeatAck(ctx, ack, sizeof(ack)),
+        WOLFSPDM_E_PEER_ERROR, "Version mismatch should fail");
+    ASSERT_EQ(wolfSPDM_Heartbeat(ctx), WOLFSPDM_E_NOT_CONNECTED,
+        "Heartbeat needs a session");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+#endif /* !WOLFSPDM_NO_HEARTBEAT */
+
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+static int test_key_update_msgs(void)
+{
+    byte buf[16];
+    byte ack[] = {0x12, SPDM_KEY_UPDATE_ACK,
+        SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS, 0x42};
+    word32 bufSz = sizeof(buf);
+    byte tag = 0;
+    TEST_CTX_SETUP_V12();
+
+    printf("test_key_update_msgs...\n");
+    ASSERT_SUCCESS(wolfSPDM_BuildKeyUpdate(ctx, buf, &bufSz,
+        SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS, &tag));
+    ASSERT_EQ(bufSz, 4, "KEY_UPDATE should be 4 bytes");
+    ASSERT_EQ(buf[1], SPDM_KEY_UPDATE, "Code should be 0xE9");
+    ASSERT_EQ(buf[2], SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS, "Operation");
+    ASSERT_EQ(buf[3], tag, "Tag should match returned value");
+    bufSz = 2;
+    ASSERT_EQ(wolfSPDM_BuildKeyUpdate(ctx, buf, &bufSz,
+        SPDM_KEY_UPDATE_OP_UPDATE_KEY, &tag), WOLFSPDM_E_BUFFER_SMALL,
+        "Small buffer should fail");
+
+    ASSERT_SUCCESS(wolfSPDM_ParseKeyUpdateAck(ctx, ack, sizeof(ack),
+        SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS, 0x42));
+    ASSERT_EQ(wolfSPDM_ParseKeyUpdateAck(ctx, ack, sizeof(ack),
+        SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS, 0xFF), WOLFSPDM_E_KEY_UPDATE,
+        "Mismatched tag should fail");
+    ASSERT_EQ(wolfSPDM_ParseKeyUpdateAck(ctx, ack, sizeof(ack),
+        SPDM_KEY_UPDATE_OP_UPDATE_KEY, 0x42), WOLFSPDM_E_KEY_UPDATE,
+        "Mismatched operation should fail");
+    ASSERT_EQ(wolfSPDM_KeyUpdate(ctx, 1), WOLFSPDM_E_NOT_CONNECTED,
+        "KeyUpdate needs a session");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
+static int test_derive_updated_keys(void)
+{
+    byte origReqKey[WOLFSPDM_AEAD_KEY_SIZE];
+    byte origRspKey[WOLFSPDM_AEAD_KEY_SIZE];
+    TEST_CTX_SETUP_V12();
+
+    printf("test_derive_updated_keys...\n");
+    XMEMSET(ctx->reqAppSecret, 0x5A, WOLFSPDM_HASH_SIZE);
+    XMEMSET(ctx->rspAppSecret, 0xA5, WOLFSPDM_HASH_SIZE);
+    XMEMSET(ctx->reqDataKey, 0x11, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMSET(ctx->rspDataKey, 0x22, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMCPY(origReqKey, ctx->reqDataKey, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMCPY(origRspKey, ctx->rspDataKey, WOLFSPDM_AEAD_KEY_SIZE);
+
+    ASSERT_SUCCESS(wolfSPDM_DeriveUpdatedKeys(ctx, 1));
+    ASSERT_NE(memcmp(ctx->reqDataKey, origReqKey, WOLFSPDM_AEAD_KEY_SIZE), 0,
+        "Req key should change");
+    ASSERT_NE(memcmp(ctx->rspDataKey, origRspKey, WOLFSPDM_AEAD_KEY_SIZE), 0,
+        "Rsp key should change");
+
+    XMEMCPY(origReqKey, ctx->reqDataKey, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMCPY(origRspKey, ctx->rspDataKey, WOLFSPDM_AEAD_KEY_SIZE);
+    ASSERT_SUCCESS(wolfSPDM_DeriveUpdatedKeys(ctx, 0));
+    ASSERT_NE(memcmp(ctx->reqDataKey, origReqKey, WOLFSPDM_AEAD_KEY_SIZE), 0,
+        "Req key should change");
+    ASSERT_EQ(memcmp(ctx->rspDataKey, origRspKey, WOLFSPDM_AEAD_KEY_SIZE), 0,
+        "Rsp key should not change");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
+/* Loopback responder: a mirrored context that answers secured requests */
+static WOLFSPDM_CTX g_peer;
+static int g_peerRejects;
+
+static void test_swap(byte* a, byte* b, word32 sz)
+{
+    word32 i;
+    for (i = 0; i < sz; i++) {
+        byte t = a[i];
+        a[i] = b[i];
+        b[i] = t;
+    }
+}
+
+/* Swap the peer's directions so DeriveUpdatedKeys(peer, 0) rotates the
+ * requester-to-responder key */
+static void test_peer_swap_dirs(WOLFSPDM_CTX* p)
+{
+    test_swap(p->reqDataKey, p->rspDataKey, WOLFSPDM_AEAD_KEY_SIZE);
+    test_swap(p->reqDataIv, p->rspDataIv, WOLFSPDM_AEAD_IV_SIZE);
+    test_swap(p->reqAppSecret, p->rspAppSecret, WOLFSPDM_HASH_SIZE);
+}
+
+static int test_peer_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf, word32 txSz,
+    byte* rxBuf, word32* rxSz, void* userCtx)
+{
+    WOLFSPDM_CTX* p = (WOLFSPDM_CTX*)userCtx;
+    byte req[32];
+    byte rsp[4];
+    word32 reqSz = sizeof(req);
+
+    (void)ctx;
+    if (wolfSPDM_DecryptInternal(p, txBuf, txSz, req, &reqSz) != 0 ||
+            reqSz < 4) {
+        return -1;
+    }
+    rsp[0] = req[0];
+    rsp[2] = req[2];
+    rsp[3] = req[3];
+    if (g_peerRejects) {
+        rsp[1] = SPDM_ERROR;
+        rsp[2] = SPDM_ERROR_BUSY;
+        rsp[3] = 0;
+    }
+    else if (req[1] == SPDM_KEY_UPDATE) {
+        rsp[1] = SPDM_KEY_UPDATE_ACK;
+        if (req[2] == SPDM_KEY_UPDATE_OP_UPDATE_KEY) {
+            test_peer_swap_dirs(p);
+            wolfSPDM_DeriveUpdatedKeys(p, 0);
+            test_peer_swap_dirs(p);
+            p->rspSeqNum = 0;
+        }
+        else if (req[2] == SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS) {
+            wolfSPDM_DeriveUpdatedKeys(p, 1);
+            p->reqSeqNum = 0;
+            p->rspSeqNum = 0;
+        }
+    }
+#ifndef WOLFSPDM_NO_HEARTBEAT
+    else if (req[1] == SPDM_HEARTBEAT) {
+        rsp[1] = SPDM_HEARTBEAT_ACK;
+        rsp[2] = 0;
+        rsp[3] = 0;
+    }
+#endif
+    else {
+        return -1;
+    }
+    return wolfSPDM_EncryptInternal(p, rsp, sizeof(rsp), rxBuf, rxSz);
+}
+
+static void test_session_loopback(WOLFSPDM_CTX* ctx)
+{
+    WOLFSPDM_CTX* p = &g_peer;
+
+    ctx->spdmVersion = SPDM_VERSION_12;
+    ctx->sessionId = 0x00020001;
+    ctx->state = WOLFSPDM_STATE_CONNECTED;
+    XMEMSET(ctx->reqDataKey, 0x11, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMSET(ctx->rspDataKey, 0x22, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMSET(ctx->reqDataIv, 0x33, WOLFSPDM_AEAD_IV_SIZE);
+    XMEMSET(ctx->rspDataIv, 0x44, WOLFSPDM_AEAD_IV_SIZE);
+    XMEMSET(ctx->reqAppSecret, 0x55, WOLFSPDM_HASH_SIZE);
+    XMEMSET(ctx->rspAppSecret, 0x66, WOLFSPDM_HASH_SIZE);
+#ifndef WOLFSPDM_NO_CERT
+    ctx->rspCaps = SPDM_CAP_HBEAT_CAP | SPDM_CAP_KEY_UPD_CAP;
+#endif
+
+    wolfSPDM_Init(p);
+    p->spdmVersion = ctx->spdmVersion;
+    p->sessionId = ctx->sessionId;
+    XMEMCPY(p->reqDataKey, ctx->rspDataKey, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMCPY(p->rspDataKey, ctx->reqDataKey, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMCPY(p->reqDataIv, ctx->rspDataIv, WOLFSPDM_AEAD_IV_SIZE);
+    XMEMCPY(p->rspDataIv, ctx->reqDataIv, WOLFSPDM_AEAD_IV_SIZE);
+    XMEMCPY(p->reqAppSecret, ctx->rspAppSecret, WOLFSPDM_HASH_SIZE);
+    XMEMCPY(p->rspAppSecret, ctx->reqAppSecret, WOLFSPDM_HASH_SIZE);
+    g_peerRejects = 0;
+    wolfSPDM_SetIO(ctx, test_peer_io_cb, p);
+}
+
+static int test_key_update_loopback(void)
+{
+    byte reqKey[WOLFSPDM_AEAD_KEY_SIZE];
+    byte rspKey[WOLFSPDM_AEAD_KEY_SIZE];
+    word64 reqSeq;
+    TEST_CTX_SETUP();
+
+    printf("test_key_update_loopback...\n");
+    test_session_loopback(ctx);
+#ifndef WOLFSPDM_NO_HEARTBEAT
+    ASSERT_SUCCESS(wolfSPDM_Heartbeat(ctx));
+#endif
+
+    XMEMCPY(reqKey, ctx->reqDataKey, sizeof(reqKey));
+    XMEMCPY(rspKey, ctx->rspDataKey, sizeof(rspKey));
+    ASSERT_SUCCESS(wolfSPDM_KeyUpdate(ctx, 0));
+    ASSERT_NE(memcmp(reqKey, ctx->reqDataKey, sizeof(reqKey)), 0,
+        "UpdateKey should rotate the request key");
+    ASSERT_EQ(memcmp(rspKey, ctx->rspDataKey, sizeof(rspKey)), 0,
+        "UpdateKey should keep the response key");
+
+    XMEMCPY(reqKey, ctx->reqDataKey, sizeof(reqKey));
+    ASSERT_SUCCESS(wolfSPDM_KeyUpdate(ctx, 1));
+    ASSERT_NE(memcmp(reqKey, ctx->reqDataKey, sizeof(reqKey)), 0,
+        "UpdateAllKeys should rotate the request key");
+    ASSERT_NE(memcmp(rspKey, ctx->rspDataKey, sizeof(rspKey)), 0,
+        "UpdateAllKeys should rotate the response key");
+
+    /* A rejected update keeps the keys and never reuses a sequence number */
+    g_peerRejects = 1;
+    XMEMCPY(reqKey, ctx->reqDataKey, sizeof(reqKey));
+    XMEMCPY(rspKey, ctx->rspDataKey, sizeof(rspKey));
+    reqSeq = ctx->reqSeqNum;
+    ASSERT_EQ(wolfSPDM_KeyUpdate(ctx, 1), WOLFSPDM_E_PEER_ERROR,
+        "Rejected UpdateAllKeys should fail");
+    ASSERT_EQ(ctx->reqSeqNum, reqSeq + 1, "Sequence must advance");
+    ASSERT_EQ(wolfSPDM_KeyUpdate(ctx, 0), WOLFSPDM_E_PEER_ERROR,
+        "Rejected UpdateKey should fail");
+    ASSERT_EQ(memcmp(reqKey, ctx->reqDataKey, sizeof(reqKey)), 0,
+        "Rejected update should keep the request key");
+    ASSERT_EQ(memcmp(rspKey, ctx->rspDataKey, sizeof(rspKey)), 0,
+        "Rejected update should keep the response key");
+    g_peerRejects = 0;
+    ASSERT_SUCCESS(wolfSPDM_KeyUpdate(ctx, 1));
+
+#ifndef WOLFSPDM_NO_CERT
+    ctx->rspCaps = 0;
+    ASSERT_EQ(wolfSPDM_KeyUpdate(ctx, 1), WOLFSPDM_E_CAPS_MISMATCH,
+        "Responder without KEY_UPD_CAP should be refused");
+#endif
+
+    wolfSPDM_Free(&g_peer);
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+#endif /* !WOLFSPDM_NO_KEY_UPDATE */
+
 int main(void)
 {
     printf("===========================================\n");
@@ -3245,6 +3505,14 @@ int main(void)
 #endif
 #ifdef WOLFSPDM_TCG
     test_encrypt_decrypt_roundtrip_tcg();
+#endif
+#ifndef WOLFSPDM_NO_HEARTBEAT
+    test_heartbeat_msgs();
+#endif
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+    test_key_update_msgs();
+    test_derive_updated_keys();
+    test_key_update_loopback();
 #endif
 
 #ifdef WOLFSPDM_RESPONDER

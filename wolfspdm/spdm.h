@@ -143,6 +143,16 @@ WOLFSPDM_API int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
     const byte* cmdPlain, word32 cmdSz,
     byte* rspPlain, word32* rspSz);
 
+#ifndef WOLFSPDM_NO_HEARTBEAT
+#define WOLFSPDM_HAS_HEARTBEAT
+WOLFSPDM_API int wolfSPDM_Heartbeat(WOLFSPDM_CTX* ctx);
+#endif
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+#define WOLFSPDM_HAS_KEY_UPDATE
+/* Rotate the requester key, or both directions when updateAll is set */
+WOLFSPDM_API int wolfSPDM_KeyUpdate(WOLFSPDM_CTX* ctx, int updateAll);
+#endif
+
 /* Session info */
 WOLFSPDM_API word32 wolfSPDM_GetSessionId(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API byte wolfSPDM_GetNegotiatedVersion(WOLFSPDM_CTX* ctx);

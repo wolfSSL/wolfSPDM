@@ -64,6 +64,7 @@ make check
 | `--enable-dynamic-mem` | Use heap allocation for `WOLFSPDM_CTX` (default: static) |
 | `--disable-mldsa` / `--disable-mlkem` | Force off ML-DSA signatures / ML-KEM key exchange (default: auto-follow wolfSSL) |
 | `--disable-chunking` | Compile out SPDM 1.2 message chunking (default: enabled) |
+| `--disable-heartbeat` / `--disable-key-update` | Compile out HEARTBEAT / KEY_UPDATE (default: enabled) |
 | `--with-wolfssl=PATH` | wolfSSL installation path |
 
 ### Memory Modes

@@ -187,6 +187,37 @@ extern "C" {
 #if defined(NO_ASN) && !defined(WOLFSPDM_NO_CERT)
     #define WOLFSPDM_NO_CERT
 #endif
+#if defined(WOLFSPDM_PROFILE_TPM) && !defined(WOLFSPDM_NO_HEARTBEAT)
+    #define WOLFSPDM_NO_HEARTBEAT
+#endif
+#if defined(WOLFSPDM_PROFILE_TPM) && !defined(WOLFSPDM_NO_KEY_UPDATE)
+    #define WOLFSPDM_NO_KEY_UPDATE
+#endif
+
+/* ----- Session Keep-Alive and Key Rotation ----- */
+
+#define SPDM_CAP_HBEAT_CAP          0x00002000
+#define SPDM_CAP_KEY_UPD_CAP        0x00004000
+
+#ifndef WOLFSPDM_NO_HEARTBEAT
+#define SPDM_HEARTBEAT              0xE8
+#define SPDM_HEARTBEAT_ACK          0x68
+#define WOLFSPDM_HBEAT_REQ_CAP      SPDM_CAP_HBEAT_CAP
+#else
+#define WOLFSPDM_HBEAT_REQ_CAP      0
+#endif
+
+#ifndef WOLFSPDM_NO_KEY_UPDATE
+#define SPDM_KEY_UPDATE             0xE9
+#define SPDM_KEY_UPDATE_ACK         0x69
+#define SPDM_KEY_UPDATE_OP_UPDATE_KEY      1
+#define SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS 2
+#define SPDM_KEY_UPDATE_OP_VERIFY_NEW_KEY  3
+#define SPDM_LABEL_UPDATE           "traffic upd"
+#define WOLFSPDM_KEY_UPD_REQ_CAP    SPDM_CAP_KEY_UPD_CAP
+#else
+#define WOLFSPDM_KEY_UPD_REQ_CAP    0
+#endif
 
 #ifndef WOLFSPDM_NO_CERT
 /* ----- Standard (certificate) Requester, DSP0274 ----- */
@@ -208,7 +239,8 @@ extern "C" {
 
 #ifndef WOLFSPDM_REQ_CAPS
 #define WOLFSPDM_REQ_CAPS  (SPDM_CAP_ENCRYPT_CAP | SPDM_CAP_MAC_CAP | \
-                            SPDM_CAP_KEY_EX_CAP)
+                            SPDM_CAP_KEY_EX_CAP | WOLFSPDM_HBEAT_REQ_CAP | \
+                            WOLFSPDM_KEY_UPD_REQ_CAP)
 #endif
 
 /* Algorithm Set B selections */

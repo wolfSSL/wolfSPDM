@@ -92,6 +92,10 @@ jobs:
             configure: '--enable-nations'
           - variant: tcg-responder
             configure: '--enable-tcg --enable-responder'
+          - variant: no-session-ext
+            configure: '--disable-heartbeat --disable-key-update'
+          - variant: lean
+            configure: '--disable-cert --disable-heartbeat --disable-key-update'
 
     steps:
     - uses: actions/checkout@v4

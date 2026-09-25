@@ -77,6 +77,12 @@
 /* Disable the standard certificate requester */
 #undef WOLFSPDM_NO_CERT
 
+/* Disable HEARTBEAT */
+#undef WOLFSPDM_NO_HEARTBEAT
+
+/* Disable KEY_UPDATE */
+#undef WOLFSPDM_NO_KEY_UPDATE
+
 /* Enable Nuvoton SPDM vendor commands */
 #undef WOLFSPDM_NUVOTON
 

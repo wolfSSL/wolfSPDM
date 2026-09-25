@@ -14,6 +14,9 @@
  * ca.cert.der for --challenge).
  */
 
+#ifdef HAVE_CONFIG_H
+    #include <config.h>
+#endif
 #include <wolfspdm/spdm.h>
 #include <stdio.h>
 #include <stdlib.h>

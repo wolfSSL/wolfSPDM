@@ -91,6 +91,24 @@ if test "x$enable_cert" = "xno"; then
 fi
 AM_CONDITIONAL([BUILD_CERT], [test "x$enable_cert" = "xyes"])
 
+AC_ARG_ENABLE([heartbeat],
+    [AS_HELP_STRING([--disable-heartbeat], [Disable HEARTBEAT session keep-alive (default: enabled)])],
+    [enable_heartbeat=$enableval],
+    [enable_heartbeat=yes])
+
+if test "x$enable_heartbeat" = "xno"; then
+    AC_DEFINE([WOLFSPDM_NO_HEARTBEAT], [1], [Disable HEARTBEAT])
+fi
+
+AC_ARG_ENABLE([key-update],
+    [AS_HELP_STRING([--disable-key-update], [Disable KEY_UPDATE session key rotation (default: enabled)])],
+    [enable_key_update=$enableval],
+    [enable_key_update=yes])
+
+if test "x$enable_key_update" = "xno"; then
+    AC_DEFINE([WOLFSPDM_NO_KEY_UPDATE], [1], [Disable KEY_UPDATE])
+fi
+
 # TCG SPDM binding (TPM transport). Nuvoton/Nations imply it.
 AC_ARG_ENABLE([tcg],
     [AS_HELP_STRING([--enable-tcg], [Enable the TCG SPDM binding (default: disabled)])],
@@ -162,6 +180,8 @@ echo "  Version:     $PACKAGE_VERSION"
 echo "  Debug:       $enable_debug"
 echo "  Dynamic mem: $enable_dynamic_mem"
 echo "  Standard:    $enable_cert"
+echo "  Heartbeat:   $enable_heartbeat"
+echo "  Key update:  $enable_key_update"
 echo "  TCG:         $enable_tcg"
 echo "  PSK:         $enable_psk"
 echo "  Nuvoton:     $enable_nuvoton"

@@ -33,9 +33,11 @@
 
 /* wolfCrypt includes - verify required algorithms */
 #ifndef HAVE_ECC
+    /* cppcheck-suppress preprocessorErrorDirective */
     #error "wolfSPDM requires ECC (--enable-ecc in wolfSSL)"
 #endif
 #ifndef WOLFSSL_SHA384
+    /* cppcheck-suppress preprocessorErrorDirective */
     #error "wolfSPDM requires SHA-384 (--enable-sha384 in wolfSSL)"
 #endif
 #include <wolfssl/wolfcrypt/ecc.h>

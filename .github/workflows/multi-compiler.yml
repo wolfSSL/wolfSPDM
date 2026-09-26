@@ -2,7 +2,7 @@ name: Multiple Compilers
 
 on:
   push:
-    branches: [ 'main', 'release/**' ]
+    branches: [ 'main', 'wolftpm-core', 'release/**' ]
   pull_request:
     branches: [ '*' ]
   repository_dispatch:

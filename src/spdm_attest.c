@@ -152,7 +152,7 @@ int wolfSPDM_BuildGetMeasurements(WOLFSPDM_CTX* ctx, byte* buf,
         return WOLFSPDM_E_INVALID_ARG;
     }
     ctxSz = wolfSPDM_ReqContextSz(ctx);
-    sz = 4 + (requestSig ? SPDM_NONCE_SZ + 1 : 0) + ctxSz;
+    sz = 4 + (requestSig ? (word32)SPDM_NONCE_SZ + 1 : 0) + ctxSz;
     if (*bufSz < sz) {
         return WOLFSPDM_E_BUFFER_SMALL;
     }
@@ -177,7 +177,7 @@ int wolfSPDM_BuildGetMeasurements(WOLFSPDM_CTX* ctx, byte* buf,
 int wolfSPDM_ParseMeasurements(WOLFSPDM_CTX* ctx, const byte* req,
     word32 reqSz, const byte* buf, word32 bufSz, word32* sigOff)
 {
-    word32 recEnd;
+    word32 recordEnd;
     word32 off = 8;
     word32 i;
     int signedReq;
@@ -190,21 +190,21 @@ int wolfSPDM_ParseMeasurements(WOLFSPDM_CTX* ctx, const byte* req,
         WOLFSPDM_E_MEASUREMENT);
 
     signedReq = (req[2] & SPDM_MEAS_REQUEST_SIG_BIT) != 0;
-    recEnd = 8 + ((word32)buf[5] | ((word32)buf[6] << 8) |
+    recordEnd = 8 + ((word32)buf[5] | ((word32)buf[6] << 8) |
         ((word32)buf[7] << 16));
-    if (buf[0] != ctx->spdmVersion || recEnd > bufSz ||
+    if (buf[0] != ctx->spdmVersion || recordEnd > bufSz ||
             (signedReq && (buf[3] & 0x0F) != ctx->currentSlotId)) {
         return WOLFSPDM_E_MEASUREMENT;
     }
 
     /* NumberOfBlocks blocks must exactly fill MeasurementRecordLength */
-    for (i = 0; i < buf[4] && off + WOLFSPDM_MEAS_BLOCK_HDR_SZ <= recEnd;
+    for (i = 0; i < buf[4] && off + WOLFSPDM_MEAS_BLOCK_HDR_SZ <= recordEnd;
             i++) {
         off += WOLFSPDM_MEAS_BLOCK_HDR_SZ + SPDM_Get16LE(&buf[off + 2]);
     }
-    if (i != buf[4] || off != recEnd ||
+    if (i != buf[4] || off != recordEnd ||
             !wolfSPDM_ParseTail(ctx, req, reqSz, buf, bufSz,
-                recEnd + SPDM_NONCE_SZ,
+                recordEnd + SPDM_NONCE_SZ,
                 signedReq ? WOLFSPDM_ECC_SIG_SIZE : 0, sigOff)) {
         return WOLFSPDM_E_MEASUREMENT;
     }

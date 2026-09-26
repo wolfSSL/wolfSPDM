@@ -151,7 +151,7 @@ int wolfSPDM_ParsePskExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf,
     rspContextLen = SPDM_Get16LE(&buf[8]);
     opaqueLen = SPDM_Get16LE(&buf[10]);
 
-    verifyOffset = 12 + rspContextLen + opaqueLen;
+    verifyOffset = 12 + (word32)rspContextLen + opaqueLen;
     rspPartialLen = verifyOffset;
 
     if (bufSz < verifyOffset + WOLFSPDM_HASH_SIZE) {

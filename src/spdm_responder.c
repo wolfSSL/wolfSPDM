@@ -772,7 +772,7 @@ static int RespBuildKeyExchangeRsp(WOLFSPDM_RESP_CTX* rctx,
         XMEMCPY(ctx->reqPrivKey, savedReqPriv, WOLFSPDM_ECC_KEY_SIZE);
         XMEMCPY(ctx->reqPubKey, savedReqPub, WOLFSPDM_ECC_POINT_SIZE);
         ctx->reqPrivKeyLen = savedReqPrivLen;
-        ctx->flags.hasReqKeyPair = savedHasReqKeyPair;
+        ctx->flags.hasReqKeyPair = savedHasReqKeyPair ? 1 : 0;
     }
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_TranscriptAdd(ctx, &out[off], WOLFSPDM_ECC_SIG_SIZE);

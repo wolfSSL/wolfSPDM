@@ -41,6 +41,8 @@ usage() {
     echo "  1. SPDM_EMU_PATH environment variable"
     echo "  2. ../spdm-emu/build/bin/ (cloned next to wolfSPDM)"
     echo "  3. spdm_responder_emu in PATH"
+    echo ""
+    echo "SPDM_EMU_ARGS adds responder options, e.g. --cap ...,CHUNK"
 }
 
 # Parse arguments
@@ -141,9 +143,11 @@ start_emu() {
         echo "  Run 'make copy_sample_key' in the spdm-emu build directory"
     fi
 
+    # SPDM_EMU_ARGS adds responder options, e.g. --cap ...,CHUNK
     (cd "$EMU_DIR" && ./spdm_responder_emu --ver "$ver" \
         --hash SHA_384 --asym ECDSA_P384 \
-        --dhe SECP_384_R1 --aead AES_256_GCM >"$EMU_LOG" 2>&1) &
+        --dhe SECP_384_R1 --aead AES_256_GCM $SPDM_EMU_ARGS \
+        >"$EMU_LOG" 2>&1) &
     EMU_PID=$!
     sleep 2
 

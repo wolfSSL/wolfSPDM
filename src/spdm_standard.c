@@ -29,8 +29,13 @@
 
 #include <wolfssl/wolfcrypt/asn.h>
 
-/* Largest certificate portion requested per GET_CERTIFICATE */
-#define WOLFSPDM_CERT_PORTION_SZ  1024
+/* Largest certificate portion requested per GET_CERTIFICATE; the response
+ * fits our DataTransferSize so certificates are never chunked */
+#if WOLFSPDM_DATA_TRANSFER_SIZE < 1024 + 8
+    #define WOLFSPDM_CERT_PORTION_SZ  (WOLFSPDM_DATA_TRANSFER_SIZE - 8)
+#else
+    #define WOLFSPDM_CERT_PORTION_SZ  1024
+#endif
 
 /* ----- VCA: GET_CAPABILITIES / NEGOTIATE_ALGORITHMS ----- */
 
@@ -42,7 +47,7 @@ int wolfSPDM_BuildGetCapabilities(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
     buf[0] = ctx->spdmVersion;
     buf[1] = SPDM_GET_CAPABILITIES;
     SPDM_Set32LE(&buf[8], WOLFSPDM_REQ_CAPS);
-    SPDM_Set32LE(&buf[12], WOLFSPDM_MAX_MSG_SIZE);  /* DataTransferSize */
+    SPDM_Set32LE(&buf[12], WOLFSPDM_DATA_TRANSFER_SIZE);
     SPDM_Set32LE(&buf[16], WOLFSPDM_MAX_MSG_SIZE);  /* MaxSPDMmsgSize */
     *bufSz = 20;
 
@@ -234,7 +239,7 @@ int wolfSPDM_GetDigests(WOLFSPDM_CTX* ctx)
     txBuf[2] = 0x00;
     txBuf[3] = 0x00;
 
-    rc = wolfSPDM_SendReceive(ctx, txBuf, sizeof(txBuf), rxBuf, &rxSz);
+    rc = wolfSPDM_ClearExchange(ctx, txBuf, sizeof(txBuf), rxBuf, &rxSz);
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_ParseDigests(ctx, rxBuf, rxSz);
     }
@@ -306,7 +311,7 @@ int wolfSPDM_GetCertificate(WOLFSPDM_CTX* ctx, int slotId)
         SPDM_Set16LE(&txBuf[6], reqLen);
 
         rxSz = sizeof(rxBuf);
-        rc = wolfSPDM_SendReceive(ctx, txBuf, sizeof(txBuf), rxBuf, &rxSz);
+        rc = wolfSPDM_ClearExchange(ctx, txBuf, sizeof(txBuf), rxBuf, &rxSz);
         if (rc == WOLFSPDM_SUCCESS) {
             rc = wolfSPDM_ParseCertificate(ctx, rxBuf, rxSz, &portionLen,
                 &remainderLen);
@@ -580,6 +585,8 @@ int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx)
     }
     ctx->state = WOLFSPDM_STATE_INIT;
     ctx->lastPeerErrorCode = 0;
+    /* No chunking or other peer capability until CAPABILITIES says so */
+    ctx->rspCaps = 0;
     wolfSPDM_TranscriptReset(ctx);
 #if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)
     wolfSPDM_AttestFree(ctx);

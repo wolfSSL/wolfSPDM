@@ -1145,8 +1145,9 @@ static int test_nations_psk_message_format(void)
 static int test_decrypt_overflow(void)
 {
     /* Static to avoid 4KB+ on stack; cipherLen must exceed
-     * sizeof(decrypted) = WOLFSPDM_MAX_MSG_SIZE + 16 = 4112 */
-    static byte enc[4140];
+     * sizeof(decrypted) = WOLFSPDM_XFER_MSG_SIZE + WOLFSPDM_SECURED_PAD */
+    static byte enc[8 + WOLFSPDM_XFER_MSG_SIZE + WOLFSPDM_SECURED_PAD + 2 +
+        WOLFSPDM_AEAD_TAG_SIZE];
     byte plain[64];
     word32 plainSz = sizeof(plain);
     int rc;
@@ -1159,13 +1160,13 @@ static int test_decrypt_overflow(void)
     memset(ctx->rspDataKey, 0x42, sizeof(ctx->rspDataKey));
     memset(ctx->rspDataIv, 0x42, sizeof(ctx->rspDataIv));
 
-    /* MCTP header: rspLen=4130 -> cipherLen=4114 > 4112 = overflow guard */
+    /* MCTP header: cipherLen two bytes past the decrypt buffer */
     memset(enc, 0, sizeof(enc));
     SPDM_Set32LE(&enc[0], ctx->sessionId);
     SPDM_Set16LE(&enc[4], 0x0000);
-    SPDM_Set16LE(&enc[6], 4130);
+    SPDM_Set16LE(&enc[6], (word16)(sizeof(enc) - 8));
 
-    rc = wolfSPDM_DecryptInternal(ctx, enc, 4138, plain, &plainSz);
+    rc = wolfSPDM_DecryptInternal(ctx, enc, sizeof(enc), plain, &plainSz);
     ASSERT_EQ(rc, WOLFSPDM_E_BUFFER_SMALL, "Overflow cipherLen must be caught");
 
     TEST_CTX_FREE();
@@ -2245,6 +2246,52 @@ static int test_build_key_exchange_mode_opaque(void)
     TEST_PASS();
 }
 
+/* libspdm pads MCTP records with up to 32 random bytes; a full-size message
+ * with the most padding must still decrypt */
+static int test_decrypt_mctp_random_padding(void)
+{
+    static byte inner[3 + WOLFSPDM_XFER_MSG_SIZE + 32];
+    static byte rec[8 + sizeof(inner) + WOLFSPDM_AEAD_TAG_SIZE];
+    static byte dec[WOLFSPDM_XFER_MSG_SIZE];
+    Aes aes;
+    byte iv[WOLFSPDM_AEAD_IV_SIZE];
+    word32 decSz = sizeof(dec);
+    word32 i;
+    TEST_CTX_SETUP_V12();
+    printf("test_decrypt_mctp_random_padding...\n");
+
+    ctx->sessionId = 0x11223344;
+    XMEMSET(ctx->rspDataKey, 0x33, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMSET(ctx->rspDataIv, 0x44, WOLFSPDM_AEAD_IV_SIZE);
+
+    for (i = 0; i < sizeof(inner); i++) {
+        inner[i] = (byte)(i * 3);
+    }
+    SPDM_Set16LE(inner, (word16)(1 + WOLFSPDM_XFER_MSG_SIZE));
+    inner[2] = MCTP_MESSAGE_TYPE_SPDM;
+    inner[3] = SPDM_VERSION_12;
+    SPDM_Set32LE(&rec[0], ctx->sessionId);
+    SPDM_Set16LE(&rec[4], 0);
+    SPDM_Set16LE(&rec[6], (word16)(sizeof(inner) + WOLFSPDM_AEAD_TAG_SIZE));
+    wolfSPDM_BuildIV(iv, ctx->rspDataIv, 0);
+
+    ASSERT_SUCCESS(wc_AesInit(&aes, NULL, INVALID_DEVID));
+    ASSERT_SUCCESS(wc_AesGcmSetKey(&aes, ctx->rspDataKey,
+        WOLFSPDM_AEAD_KEY_SIZE));
+    ASSERT_SUCCESS(wc_AesGcmEncrypt(&aes, &rec[8], inner, sizeof(inner),
+        iv, sizeof(iv), &rec[8 + sizeof(inner)], WOLFSPDM_AEAD_TAG_SIZE,
+        rec, 8));
+    wc_AesFree(&aes);
+
+    ASSERT_SUCCESS(wolfSPDM_DecryptInternal(ctx, rec, sizeof(rec), dec,
+        &decSz));
+    ASSERT_EQ(decSz, WOLFSPDM_XFER_MSG_SIZE, "whole message recovered");
+    ASSERT_EQ(memcmp(dec, inner + 3, decSz), 0, "message matches");
+
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+
 static int test_decrypt_rejects_wrong_mctp_type(void)
 {
     /* An authenticated record whose inner MCTP type is not SPDM must be
@@ -3209,7 +3256,7 @@ static int test_derive_updated_keys(void)
 #endif /* !WOLFSPDM_NO_KEY_UPDATE */
 
 #if !defined(WOLFSPDM_NO_KEY_UPDATE) || !defined(WOLFSPDM_NO_MEAS) || \
-    !defined(WOLFSPDM_NO_CHALLENGE)
+    !defined(WOLFSPDM_NO_CHALLENGE) || !defined(WOLFSPDM_NO_CHUNK)
 /* Loopback responder: a mirrored context that answers requests */
 static WOLFSPDM_CTX g_peer;
 static int g_peerRejects;
@@ -3379,29 +3426,14 @@ static word32 test_chal_rsp(const WOLFSPDM_CTX* ctx, const byte* req,
 }
 #endif
 
-static int test_peer_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf, word32 txSz,
-    byte* rxBuf, word32* rxSz, void* userCtx)
+/* The peer's answer to one complete request */
+static int test_peer_dispatch(WOLFSPDM_CTX* ctx, WOLFSPDM_CTX* p,
+    const byte* req, word32 reqSz, byte* rsp, word32* rspSz)
 {
-    WOLFSPDM_CTX* p = (WOLFSPDM_CTX*)userCtx;
-    byte req[64];
-    byte rsp[512];
-    word32 reqSz = sizeof(req);
-    word32 rspSz = 4;
-    int clear = (txSz > 0 && txBuf[0] >= 0x10 && txBuf[0] <= 0x1F);
     int rc = 0;
 
     (void)ctx;
-    if (clear && txSz <= sizeof(req)) {
-        XMEMCPY(req, txBuf, txSz);
-        reqSz = txSz;
-    }
-    else if (clear ||
-            wolfSPDM_DecryptInternal(p, txBuf, txSz, req, &reqSz) != 0) {
-        return -1;
-    }
-    if (reqSz < 4) {
-        return -1;
-    }
+    (void)p;
 #ifndef WOLFSPDM_NO_MEAS
     if (req[1] != SPDM_GET_MEASUREMENTS) {
         test_peer_run_reset();
@@ -3412,8 +3444,15 @@ static int test_peer_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf, word32 txSz,
     rsp[1] = SPDM_ERROR;
     rsp[2] = SPDM_ERROR_UNSUPPORTED_REQUEST;
     rsp[3] = 0;
+    *rspSz = 4;
     if (g_peerRejects) {
         rsp[2] = SPDM_ERROR_BUSY;
+    }
+    else if (req[1] == SPDM_VENDOR_DEFINED_REQUEST) {
+        /* Echo sized by the request, to drive chunking */
+        rsp[1] = 0x7E;
+        XMEMCPY(rsp + 2, req + 2, reqSz - 2);
+        *rspSz = reqSz;
     }
 #ifndef WOLFSPDM_NO_KEY_UPDATE
     else if (req[1] == SPDM_KEY_UPDATE) {
@@ -3431,13 +3470,13 @@ static int test_peer_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf, word32 txSz,
 #endif
 #ifndef WOLFSPDM_NO_MEAS
     else if (req[1] == SPDM_GET_MEASUREMENTS) {
-        rspSz = test_meas_rsp(req, reqSz, rsp);
+        *rspSz = test_meas_rsp(req, reqSz, rsp);
         if (req[2] & SPDM_MEAS_REQUEST_SIG_BIT) {
             rc = test_peer_sign("responder-measurements signing", 30,
-                req, reqSz, rsp, &rspSz);
+                req, reqSz, rsp, rspSz);
         }
         else {
-            rc = test_peer_run_add(req, reqSz, rsp, rspSz);
+            rc = test_peer_run_add(req, reqSz, rsp, *rspSz);
         }
     }
 #endif
@@ -3445,10 +3484,249 @@ static int test_peer_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf, word32 txSz,
     else if (req[1] == SPDM_CHALLENGE) {
         /* No DIGESTS/CERTIFICATE crossed the loopback, so M1 is VCA + C */
         test_peer_run_reset();
-        rspSz = test_chal_rsp(ctx, req, reqSz, rsp);
+        *rspSz = test_chal_rsp(ctx, req, reqSz, rsp);
         rc = test_peer_sign("responder-challenge_auth signing", 32,
-            req, reqSz, rsp, &rspSz);
+            req, reqSz, rsp, rspSz);
     }
+#endif
+    return rc;
+}
+
+#ifndef WOLFSPDM_NO_CHUNK
+/* Responder side of CHUNK_SEND and CHUNK_GET, with injectable faults */
+enum {
+    PEER_FAULT_NONE = 0,
+    PEER_FAULT_GET_HANDLE,
+    PEER_FAULT_GET_SEQ,
+    PEER_FAULT_GET_SIZE,
+    PEER_FAULT_GET_NO_LAST,
+    PEER_FAULT_GET_EARLY_LAST,
+    PEER_FAULT_GET_ERROR,
+    PEER_FAULT_GET_TOO_BIG,
+    PEER_FAULT_ACK_SEQ,
+    PEER_FAULT_ACK_EARLY_ERROR,
+    PEER_FAULT_ACK_EXTRA
+};
+static byte g_peerLarge[1024];      /* response served by CHUNK_GET */
+static word32 g_peerLargeSz;
+static word32 g_peerLargeOff;
+static word32 g_peerGetSeq;
+static byte g_peerGetHandle;
+static byte g_peerReq[1024];        /* request reassembled from CHUNK_SEND */
+static word32 g_peerReqSz;
+static word32 g_peerSendSeq;
+static word32 g_peerDts;            /* the peer's DataTransferSize */
+static word32 g_peerChunkMax;       /* nonzero: always CHUNK_GET, this big */
+static int g_peerFault;
+
+static void test_peer_chunk_reset(void)
+{
+    g_peerLargeSz = 0;
+    g_peerLargeOff = 0;
+    g_peerGetSeq = 0;
+    g_peerReqSz = 0;
+    g_peerSendSeq = 0;
+    g_peerDts = sizeof(g_peerReq);
+    g_peerChunkMax = 0;
+    g_peerFault = PEER_FAULT_NONE;
+}
+
+static word32 test_seq_sz(const byte* msg)
+{
+    return (msg[0] >= SPDM_VERSION_14) ? 4 : 2;
+}
+
+static word32 test_get_seq(const byte* msg)
+{
+    return (test_seq_sz(msg) == 4) ? SPDM_Get32LE(msg + 4) :
+        SPDM_Get16LE(msg + 4);
+}
+
+static void test_set_seq(byte* msg, word32 seq)
+{
+    if (test_seq_sz(msg) == 4) {
+        SPDM_Set32LE(msg + 4, seq);
+    }
+    else {
+        SPDM_Set16LE(msg + 4, (word16)seq);
+    }
+}
+
+static int test_peer_chunk_get(const byte* req, byte* rsp, word32* rspSz)
+{
+    word32 seq = test_get_seq(req);
+    word32 hdr = (seq == 0) ? 16 : 12;
+    word32 room = WOLFSPDM_DATA_TRANSFER_SIZE - hdr;
+    word32 size = g_peerLargeSz - g_peerLargeOff;
+
+    if (req[3] != g_peerGetHandle || seq != g_peerGetSeq ||
+            g_peerLargeOff >= g_peerLargeSz) {
+        return -1;
+    }
+    if (g_peerFault == PEER_FAULT_GET_ERROR && seq == 1) {
+        rsp[0] = req[0];
+        rsp[1] = SPDM_ERROR;
+        rsp[2] = SPDM_ERROR_UNSPECIFIED;
+        rsp[3] = 0;
+        *rspSz = 4;
+        return 0;
+    }
+    /* Never past the requester's DataTransferSize */
+    if (g_peerChunkMax != 0 && g_peerChunkMax < room) {
+        room = g_peerChunkMax;
+    }
+    if (size > room) {
+        size = room;
+    }
+    XMEMSET(rsp, 0, hdr);
+    rsp[0] = req[0];
+    rsp[1] = SPDM_CHUNK_RESPONSE;
+    rsp[3] = g_peerGetHandle;
+    test_set_seq(rsp, seq);
+    SPDM_Set32LE(rsp + 8, size);
+    if (seq == 0) {
+        SPDM_Set32LE(rsp + 12, g_peerLargeSz);
+    }
+    XMEMCPY(rsp + hdr, g_peerLarge + g_peerLargeOff, size);
+    g_peerLargeOff += size;
+    g_peerGetSeq++;
+    if (g_peerLargeOff == g_peerLargeSz) {
+        rsp[2] = SPDM_CHUNK_LAST_CHUNK;
+    }
+    *rspSz = hdr + size;
+
+    if (g_peerFault == PEER_FAULT_GET_HANDLE) {
+        rsp[3] ^= 0x01;
+    }
+    else if (g_peerFault == PEER_FAULT_GET_SEQ) {
+        test_set_seq(rsp, seq + 1);
+    }
+    else if (g_peerFault == PEER_FAULT_GET_SIZE) {
+        SPDM_Set32LE(rsp + 8, size + 1);
+    }
+    else if (g_peerFault == PEER_FAULT_GET_NO_LAST) {
+        rsp[2] = 0;
+    }
+    else if (g_peerFault == PEER_FAULT_GET_EARLY_LAST) {
+        rsp[2] = SPDM_CHUNK_LAST_CHUNK;
+    }
+    else if (g_peerFault == PEER_FAULT_GET_TOO_BIG && seq == 0) {
+        SPDM_Set32LE(rsp + 12, WOLFSPDM_MAX_MSG_SIZE + 1);
+    }
+    return 0;
+}
+
+/* Take one request message: collect CHUNK_SEND pieces, serve CHUNK_GET, and
+ * park responses too large for the requester behind ERROR(LargeResponse) */
+static int test_peer_chunk(WOLFSPDM_CTX* ctx, WOLFSPDM_CTX* p,
+    const byte* req, word32 reqSz, byte* rsp, word32* rspSz)
+{
+    byte out[1024];
+    word32 outSz = 0;
+    word32 prefix = 0;
+    int rc;
+
+    if (req[1] == SPDM_CHUNK_GET) {
+        return test_peer_chunk_get(req, rsp, rspSz);
+    }
+    if (req[1] == SPDM_CHUNK_SEND) {
+        word32 seq = test_get_seq(req);
+        word32 hdr = (seq == 0) ? 16 : 12;
+        word32 size = SPDM_Get32LE(req + 8);
+
+        if (reqSz > g_peerDts || seq != g_peerSendSeq || hdr + size != reqSz ||
+                g_peerReqSz + size > sizeof(g_peerReq)) {
+            return -1;
+        }
+        XMEMCPY(g_peerReq + g_peerReqSz, req + hdr, size);
+        g_peerReqSz += size;
+        g_peerSendSeq++;
+
+        rsp[0] = req[0];
+        rsp[1] = SPDM_CHUNK_SEND_ACK;
+        rsp[2] = 0;
+        rsp[3] = req[3];
+        test_set_seq(rsp, (g_peerFault == PEER_FAULT_ACK_SEQ) ? seq + 1 : seq);
+        prefix = 4 + test_seq_sz(req);
+        if (g_peerFault == PEER_FAULT_ACK_EARLY_ERROR) {
+            rsp[2] = SPDM_CHUNK_EARLY_ERROR;
+            rsp[prefix] = req[0];
+            rsp[prefix + 1] = SPDM_ERROR;
+            rsp[prefix + 2] = SPDM_ERROR_INVALID_REQUEST;
+            rsp[prefix + 3] = 0;
+            *rspSz = prefix + 4;
+            return 0;
+        }
+        if ((req[2] & SPDM_CHUNK_LAST_CHUNK) == 0) {
+            *rspSz = prefix;
+            if (g_peerFault == PEER_FAULT_ACK_EXTRA) {
+                rsp[prefix] = 0;
+                (*rspSz)++;
+            }
+            return 0;
+        }
+        /* Last piece: answer the reassembled request */
+        req = g_peerReq;
+        reqSz = g_peerReqSz;
+        g_peerReqSz = 0;
+        g_peerSendSeq = 0;
+    }
+
+    rc = test_peer_dispatch(ctx, p, req, reqSz, out, &outSz);
+    if (rc != 0) {
+        return rc;
+    }
+    if (g_peerChunkMax == 0 && prefix + outSz <= WOLFSPDM_DATA_TRANSFER_SIZE) {
+        XMEMCPY(rsp + prefix, out, outSz);
+        *rspSz = prefix + outSz;
+        return 0;
+    }
+    rsp[0] = out[0];
+    rsp[1] = SPDM_ERROR;
+    rsp[3] = 0;
+    if ((ctx->rspCaps & SPDM_CAP_CHUNK_CAP) == 0) {
+        rsp[2] = SPDM_ERROR_RESPONSE_TOO_LARGE;
+        *rspSz = 4;
+        return 0;
+    }
+    XMEMCPY(g_peerLarge, out, outSz);
+    g_peerLargeSz = outSz;
+    g_peerLargeOff = 0;
+    g_peerGetSeq = 0;
+    g_peerGetHandle++;
+    rsp[2] = SPDM_ERROR_LARGE_RESPONSE;
+    rsp[4] = g_peerGetHandle;
+    *rspSz = 5;
+    return 0;
+}
+#endif /* !WOLFSPDM_NO_CHUNK */
+
+static int test_peer_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf, word32 txSz,
+    byte* rxBuf, word32* rxSz, void* userCtx)
+{
+    WOLFSPDM_CTX* p = (WOLFSPDM_CTX*)userCtx;
+    byte req[1024];
+    byte rsp[1100];
+    word32 reqSz = sizeof(req);
+    word32 rspSz = 0;
+    int clear = (txSz > 0 && txBuf[0] >= 0x10 && txBuf[0] <= 0x1F);
+    int rc;
+
+    if (clear && txSz <= sizeof(req)) {
+        XMEMCPY(req, txBuf, txSz);
+        reqSz = txSz;
+    }
+    else if (clear ||
+            wolfSPDM_DecryptInternal(p, txBuf, txSz, req, &reqSz) != 0) {
+        return -1;
+    }
+    if (reqSz < 4) {
+        return -1;
+    }
+#ifndef WOLFSPDM_NO_CHUNK
+    rc = test_peer_chunk(ctx, p, req, reqSz, rsp, &rspSz);
+#else
+    rc = test_peer_dispatch(ctx, p, req, reqSz, rsp, &rspSz);
 #endif
     if (rc != 0) {
         return -1;
@@ -3512,6 +3790,13 @@ static void test_session_loopback(WOLFSPDM_CTX* ctx)
 #endif
 #ifndef WOLFSPDM_NO_CHALLENGE
     ctx->rspCaps |= SPDM_CAP_CHAL_CAP;
+#endif
+#ifndef WOLFSPDM_NO_CHUNK
+    /* Chunk whenever a response outgrows our DataTransferSize */
+    ctx->rspCaps |= SPDM_CAP_CHUNK_CAP;
+    ctx->dataTransferSize = 0;
+    ctx->maxSpdmMsgSize = 0;
+    test_peer_chunk_reset();
 #endif
     g_peerRejects = 0;
     wolfSPDM_SetIO(ctx, test_peer_io_cb, p);
@@ -3789,6 +4074,136 @@ static int test_challenge_loopback(void)
 }
 #endif /* !WOLFSPDM_NO_CHALLENGE */
 
+#ifndef WOLFSPDM_NO_CHUNK
+/* Send a len-byte VENDOR_DEFINED request the peer echoes; -100 on a bad echo */
+static int test_chunk_echo(WOLFSPDM_CTX* ctx, int secured, word32 len)
+{
+    byte req[600];
+    byte rsp[700];
+    word32 rspSz = sizeof(rsp);
+    word32 i;
+    int rc;
+
+    req[0] = ctx->spdmVersion;
+    req[1] = SPDM_VENDOR_DEFINED_REQUEST;
+    for (i = 2; i < len; i++) {
+        req[i] = (byte)(i * 7);
+    }
+    if (secured) {
+        rc = wolfSPDM_SecuredExchange(ctx, req, len, rsp, &rspSz);
+    }
+    else {
+        rc = wolfSPDM_ClearExchange(ctx, req, len, rsp, &rspSz);
+    }
+    if (rc == 0 && (rspSz != len || rsp[1] != 0x7E ||
+            memcmp(rsp + 2, req + 2, len - 2) != 0)) {
+        rc = -100;
+    }
+    return rc;
+}
+
+static int test_chunk_fault(WOLFSPDM_CTX* ctx, int fault)
+{
+    int rc;
+
+    test_peer_chunk_reset();
+    g_peerDts = 48;
+    g_peerChunkMax = 40;
+    g_peerFault = fault;
+    rc = test_chunk_echo(ctx, 0, 300);
+    test_peer_chunk_reset();
+    g_peerDts = 48;
+    return rc;
+}
+
+static int test_chunk_transfers(void)
+{
+    byte req[300];
+    byte rsp[64];
+    word32 rspSz = sizeof(rsp);
+    TEST_CTX_SETUP();
+
+    printf("test_chunk_transfers...\n");
+    test_session_loopback(ctx);
+    ctx->dataTransferSize = 48;
+    ctx->maxSpdmMsgSize = 4096;
+    g_peerDts = 48;
+
+    /* CHUNK_SEND, response in the last CHUNK_SEND_ACK when it fits */
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 0, 300));
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 1, 300));
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 1, 48));
+
+    /* Responses fetched with CHUNK_GET, after CHUNK_SEND or on their own */
+    g_peerChunkMax = 40;
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 0, 300));
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 1, 300));
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 0, 20));
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 1, 20));
+
+    /* 1.4 carries 32-bit chunk sequence numbers */
+    ctx->spdmVersion = SPDM_VERSION_14;
+    g_peer.spdmVersion = SPDM_VERSION_14;
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 0, 300));
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 1, 300));
+    ctx->spdmVersion = SPDM_VERSION_12;
+    g_peer.spdmVersion = SPDM_VERSION_12;
+
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_GET_HANDLE), WOLFSPDM_E_CHUNK,
+        "CHUNK_RESPONSE with another handle");
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_GET_SEQ), WOLFSPDM_E_CHUNK,
+        "CHUNK_RESPONSE out of sequence");
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_GET_SIZE), WOLFSPDM_E_CHUNK,
+        "ChunkSize past the message");
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_GET_NO_LAST), WOLFSPDM_E_CHUNK,
+        "Complete message without LastChunk");
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_GET_EARLY_LAST),
+        WOLFSPDM_E_CHUNK, "LastChunk before the message is complete");
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_GET_ERROR),
+        WOLFSPDM_E_PEER_ERROR, "ERROR during CHUNK_GET");
+    ASSERT_EQ(wolfSPDM_GetLastPeerError(ctx), SPDM_ERROR_UNSPECIFIED,
+        "ERROR code recorded");
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_GET_TOO_BIG),
+        WOLFSPDM_E_BUFFER_SMALL, "LargeMessageSize above MaxSPDMmsgSize");
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_ACK_SEQ), WOLFSPDM_E_CHUNK,
+        "CHUNK_SEND_ACK out of sequence");
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_ACK_EARLY_ERROR),
+        WOLFSPDM_E_PEER_ERROR, "Early error in CHUNK_SEND_ACK");
+    ASSERT_EQ(wolfSPDM_GetLastPeerError(ctx), SPDM_ERROR_INVALID_REQUEST,
+        "Early error code recorded");
+    ASSERT_EQ(test_chunk_fault(ctx, PEER_FAULT_ACK_EXTRA), WOLFSPDM_E_CHUNK,
+        "Response data in a non-final CHUNK_SEND_ACK");
+
+    /* The reassembled response must fit the caller */
+    g_peerChunkMax = 40;
+    XMEMSET(req, 0x33, sizeof(req));
+    req[0] = ctx->spdmVersion;
+    req[1] = SPDM_VENDOR_DEFINED_REQUEST;
+    ASSERT_EQ(wolfSPDM_ChunkExchange(ctx, 0, req, sizeof(req), rsp, &rspSz),
+        WOLFSPDM_E_BUFFER_SMALL, "Response larger than the caller buffer");
+    test_peer_chunk_reset();
+    g_peerDts = 48;
+
+    /* Requests above the responder's MaxSPDMmsgSize are not sent */
+    ctx->maxSpdmMsgSize = 100;
+    ASSERT_EQ(test_chunk_echo(ctx, 0, 300), WOLFSPDM_E_BUFFER_SMALL,
+        "Request above MaxSPDMmsgSize");
+    ctx->maxSpdmMsgSize = 4096;
+
+#if WOLFSPDM_DATA_TRANSFER_SIZE >= 300
+    /* Without CHUNK_CAP every message goes whole */
+    ctx->rspCaps &= ~(word32)SPDM_CAP_CHUNK_CAP;
+    g_peerDts = sizeof(g_peerReq);
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 0, 300));
+    ASSERT_SUCCESS(test_chunk_echo(ctx, 1, 300));
+#endif
+
+    wolfSPDM_Free(&g_peer);
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+#endif /* !WOLFSPDM_NO_CHUNK */
+
 int main(void)
 {
     printf("===========================================\n");
@@ -3921,6 +4336,7 @@ int main(void)
     test_encrypt_internal_null_args();
     test_encrypt_decrypt_roundtrip();
     test_decrypt_rejects_wrong_mctp_type();
+    test_decrypt_mctp_random_padding();
 #ifndef WOLFSPDM_NO_CERT
     test_parse_capabilities();
     test_negotiate_algorithms_roundtrip();
@@ -3946,6 +4362,9 @@ int main(void)
 #ifndef WOLFSPDM_NO_CHALLENGE
     test_challenge_msgs();
     test_challenge_loopback();
+#endif
+#ifndef WOLFSPDM_NO_CHUNK
+    test_chunk_transfers();
 #endif
 
 #ifdef WOLFSPDM_RESPONDER

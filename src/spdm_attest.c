@@ -426,7 +426,7 @@ int wolfSPDM_Challenge(WOLFSPDM_CTX* ctx, int slotId, byte measHashType)
         rc = wolfSPDM_BuildChallenge(ctx, req, &reqSz, slotId, measHashType);
     }
     if (rc == WOLFSPDM_SUCCESS) {
-        rc = wolfSPDM_SendReceive(ctx, req, reqSz, rsp, &rspSz);
+        rc = wolfSPDM_ClearExchange(ctx, req, reqSz, rsp, &rspSz);
     }
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_ParseChallengeAuth(ctx, req, reqSz, rsp, rspSz,

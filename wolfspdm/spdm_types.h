@@ -127,7 +127,9 @@ extern "C" {
 #define WOLFSPDM_AEAD_KEY_SIZE      32  /* AES-256 key size */
 #define WOLFSPDM_AEAD_IV_SIZE       12  /* AES-GCM IV size */
 #define WOLFSPDM_AEAD_TAG_SIZE      16  /* AES-GCM tag size */
-#define WOLFSPDM_AEAD_OVERHEAD      48  /* Max AEAD record overhead (hdr+pad+tag) */
+/* Secured record bytes around a message: up to 32 of header and tag plus
+ * WOLFSPDM_SECURED_PAD of AppDataLength, MCTP type and padding */
+#define WOLFSPDM_AEAD_OVERHEAD      (32 + WOLFSPDM_SECURED_PAD)
 
 /* ----- Buffer/Message Size Limits ----- */
 
@@ -187,6 +189,13 @@ extern "C" {
 #if defined(NO_ASN) && !defined(WOLFSPDM_NO_CERT)
     #define WOLFSPDM_NO_CERT
 #endif
+/* MCTP records may carry up to 32 random bytes (DSP0277); the TCG binding
+ * only pads to 16, and wolfTPM speaks nothing else */
+#ifdef WOLFSPDM_PROFILE_TPM
+    #define WOLFSPDM_SECURED_PAD    16
+#else
+    #define WOLFSPDM_SECURED_PAD    48
+#endif
 #if defined(WOLFSPDM_PROFILE_TPM) && !defined(WOLFSPDM_NO_HEARTBEAT)
     #define WOLFSPDM_NO_HEARTBEAT
 #endif
@@ -199,6 +208,10 @@ extern "C" {
 #endif
 #if defined(WOLFSPDM_NO_CERT) && !defined(WOLFSPDM_NO_CHALLENGE)
     #define WOLFSPDM_NO_CHALLENGE
+#endif
+/* Chunking is negotiated in CAPABILITIES */
+#if defined(WOLFSPDM_NO_CERT) && !defined(WOLFSPDM_NO_CHUNK)
+    #define WOLFSPDM_NO_CHUNK
 #endif
 
 /* ----- Session Keep-Alive and Key Rotation ----- */
@@ -247,7 +260,7 @@ extern "C" {
 #ifndef WOLFSPDM_REQ_CAPS
 #define WOLFSPDM_REQ_CAPS  (SPDM_CAP_ENCRYPT_CAP | SPDM_CAP_MAC_CAP | \
                             SPDM_CAP_KEY_EX_CAP | WOLFSPDM_HBEAT_REQ_CAP | \
-                            WOLFSPDM_KEY_UPD_REQ_CAP)
+                            WOLFSPDM_KEY_UPD_REQ_CAP | WOLFSPDM_CHUNK_REQ_CAP)
 #endif
 
 /* Algorithm Set B selections */
@@ -300,12 +313,50 @@ extern "C" {
 #define SPDM_MEAS_SUMMARY_HASH_ALL  0xFF
 #endif /* !WOLFSPDM_NO_CHALLENGE */
 
+/* ----- Large message chunking (CHUNK_SEND / CHUNK_GET) ----- */
+
+#define SPDM_MIN_DATA_TRANSFER_SIZE 42
+
+/* Largest single message sent or received. MaxSPDMmsgSize stays
+ * WOLFSPDM_MAX_MSG_SIZE, so anything smaller relies on chunking. */
+#ifndef WOLFSPDM_DATA_TRANSFER_SIZE
+#define WOLFSPDM_DATA_TRANSFER_SIZE WOLFSPDM_MAX_MSG_SIZE
+#endif
+#if WOLFSPDM_DATA_TRANSFER_SIZE < SPDM_MIN_DATA_TRANSFER_SIZE || \
+    WOLFSPDM_DATA_TRANSFER_SIZE > WOLFSPDM_MAX_MSG_SIZE
+    #error "WOLFSPDM_DATA_TRANSFER_SIZE must be 42 to WOLFSPDM_MAX_MSG_SIZE"
+#endif
+#if defined(WOLFSPDM_NO_CHUNK) && \
+    WOLFSPDM_DATA_TRANSFER_SIZE != WOLFSPDM_MAX_MSG_SIZE
+    #error "WOLFSPDM_DATA_TRANSFER_SIZE below WOLFSPDM_MAX_MSG_SIZE needs chunking"
+#endif
+
+#ifndef WOLFSPDM_NO_CHUNK
+#define SPDM_CHUNK_SEND             0x85
+#define SPDM_CHUNK_GET              0x86
+#define SPDM_CHUNK_SEND_ACK         0x05
+#define SPDM_CHUNK_RESPONSE         0x06
+#define SPDM_CAP_CHUNK_CAP          0x00020000
+#define SPDM_CHUNK_LAST_CHUNK       0x01    /* CHUNK_SEND, CHUNK_RESPONSE */
+#define SPDM_CHUNK_EARLY_ERROR      0x01    /* CHUNK_SEND_ACK */
+#define WOLFSPDM_CHUNK_REQ_CAP      SPDM_CAP_CHUNK_CAP
+#else
+#define WOLFSPDM_CHUNK_REQ_CAP      0
+#endif
+
 /* ----- TCG Build Option ----- */
 
 /* Nuvoton or Nations enables TCG SPDM binding; future chips can set directly */
 #if (defined(WOLFSPDM_NUVOTON) || defined(WOLFSPDM_NATIONS)) && \
     !defined(WOLFSPDM_TCG)
     #define WOLFSPDM_TCG
+#endif
+
+/* Single-message buffers; the TCG binding is never chunked */
+#ifdef WOLFSPDM_TCG
+    #define WOLFSPDM_XFER_MSG_SIZE  WOLFSPDM_MAX_MSG_SIZE
+#else
+    #define WOLFSPDM_XFER_MSG_SIZE  WOLFSPDM_DATA_TRANSFER_SIZE
 #endif
 
 /* ----- PSK Build Option ----- */

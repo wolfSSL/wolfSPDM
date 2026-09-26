@@ -125,3 +125,100 @@ jobs:
             config.log
             test/*.log
             /tmp/spdm_emu_*.log
+
+  # CHUNK_SEND / CHUNK_GET: a small DataTransferSize on either side
+  spdm-emu-chunk:
+    name: chunking / wolfSPDM ${{ matrix.lib }} vs spdm-emu ${{ matrix.emu }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lib: dts64
+            emu: stock
+          - lib: default
+            emu: dts42
+          - lib: dts64
+            emu: dts42
+    env:
+      EMU_CAPS: CACHE,CERT,CHAL,MEAS_SIG,MEAS_FRESH,ENCRYPT,MAC,MUT_AUTH,KEY_EX,PSK_WITH_CONTEXT,ENCAP,HBEAT,KEY_UPD,HANDSHAKE_IN_CLEAR,SET_CERT,CSR,MULTI_KEY_NEG,GET_KEY_PAIR_INFO,SET_KEY_PAIR_INFO,LARGE_RESP,CHUNK
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool cmake libmbedtls-dev
+
+      - name: Compute cache period
+        id: cache-period
+        run: echo "biweekly=$(( $(date +%s) / 1296000 ))" >> $GITHUB_OUTPUT
+
+      - name: Cache wolfSSL
+        id: cache-wolfssl
+        uses: actions/cache@v4
+        with:
+          path: ~/wolfssl-install
+          key: wolfssl-spdm-ubuntu-24.04-${{ steps.cache-period.outputs.biweekly }}
+
+      - name: Build wolfSSL
+        if: steps.cache-wolfssl.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          git clone --depth 1 https://github.com/wolfSSL/wolfssl.git
+          cd wolfssl
+          ./autogen.sh
+          ./configure --enable-wolftpm --enable-ecc --enable-sha384 \
+                      --enable-aesgcm --enable-hkdf --enable-sp \
+                      --prefix=$HOME/wolfssl-install
+          make -j$(nproc)
+          make install
+
+      - name: Build wolfSPDM
+        run: |
+          ./autogen.sh
+          ./configure --with-wolfssl=$HOME/wolfssl-install \
+              CFLAGS="-O2 ${{ matrix.lib == 'dts64' && '-DWOLFSPDM_DATA_TRANSFER_SIZE=64' || '' }}"
+          make -j$(nproc)
+
+      - name: Run unit tests
+        run: LD_LIBRARY_PATH=$HOME/wolfssl-install/lib make check
+
+      # The stock build shares the main job's cache; dts42 shrinks the
+      # responder's DataTransferSize to the 42-byte minimum
+      - name: Cache spdm-emu
+        id: cache-spdm-emu
+        uses: actions/cache@v4
+        with:
+          path: ~/${{ matrix.emu == 'dts42' && 'spdm-emu-dts42' || 'spdm-emu' }}/build/bin
+          key: ${{ matrix.emu == 'dts42' && 'spdm-emu-dts42' || 'spdm-emu' }}-ubuntu-24.04-${{ steps.cache-period.outputs.biweekly }}
+
+      - name: Build spdm-emu
+        if: steps.cache-spdm-emu.outputs.cache-hit != 'true'
+        run: |
+          cd ~
+          git clone --depth 1 --recursive https://github.com/DMTF/spdm-emu.git \
+              ${{ matrix.emu == 'dts42' && 'spdm-emu-dts42' || 'spdm-emu' }}
+          cd ${{ matrix.emu == 'dts42' && 'spdm-emu-dts42' || 'spdm-emu' }}
+          mkdir build && cd build
+          cmake -DARCH=x64 -DTOOLCHAIN=GCC -DTARGET=Release -DCRYPTO=mbedtls \
+                -DCMAKE_C_FLAGS="${{ matrix.emu == 'dts42' && '-DLIBSPDM_RECEIVER_BUFFER_SIZE=170' || '' }}" ..
+          make copy_sample_key
+          make -j$(nproc)
+
+      - name: Run SPDM emulator tests with chunking
+        run: |
+          export LD_LIBRARY_PATH=$HOME/wolfssl-install/lib:${{ github.workspace }}/.libs
+          export SPDM_EMU_PATH=$HOME/${{ matrix.emu == 'dts42' && 'spdm-emu-dts42' || 'spdm-emu' }}/build/bin
+          export SPDM_EMU_ARGS="--cap $EMU_CAPS"
+          ./examples/spdm_test.sh
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spdm-emu-chunk-${{ matrix.lib }}-${{ matrix.emu }}
+          path: |
+            config.log
+            test/*.log
+            /tmp/spdm_emu_*.log

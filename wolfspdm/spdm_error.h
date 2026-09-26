@@ -60,6 +60,7 @@ enum WOLFSPDM_ERROR {
     WOLFSPDM_E_KEY_UPDATE       = -25,  /* Key update failed */
     WOLFSPDM_E_MEASUREMENT      = -26,  /* Malformed MEASUREMENTS response */
     WOLFSPDM_E_CHALLENGE        = -27,  /* Malformed or mismatched CHALLENGE_AUTH */
+    WOLFSPDM_E_CHUNK            = -28,  /* Chunked transfer failed */
 };
 
 /* Get human-readable error string */

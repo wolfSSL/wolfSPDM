@@ -96,6 +96,8 @@ jobs:
             configure: '--disable-heartbeat --disable-key-update'
           - variant: no-attest
             configure: '--disable-meas --disable-challenge'
+          - variant: no-chunking
+            configure: '--disable-chunking'
           - variant: lean
             configure: '--disable-cert --disable-heartbeat --disable-key-update'
 

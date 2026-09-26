@@ -80,6 +80,9 @@
 /* Disable CHALLENGE */
 #undef WOLFSPDM_NO_CHALLENGE
 
+/* Disable large message chunking */
+#undef WOLFSPDM_NO_CHUNK
+
 /* Disable HEARTBEAT */
 #undef WOLFSPDM_NO_HEARTBEAT
 

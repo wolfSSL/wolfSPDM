@@ -47,7 +47,7 @@ int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
     Aes aes;
     byte iv[WOLFSPDM_AEAD_IV_SIZE];
     byte aad[16];  /* Up to 14 bytes for TCG format */
-    byte plainBuf[WOLFSPDM_MAX_MSG_SIZE + 16];
+    byte plainBuf[WOLFSPDM_XFER_MSG_SIZE + 16];
     byte tag[WOLFSPDM_AEAD_TAG_SIZE];
     word32 plainBufSz;
     word16 recordLen;
@@ -59,7 +59,7 @@ int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
     if (ctx == NULL || plain == NULL || enc == NULL || encSz == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
-    if (plainSz > WOLFSPDM_MAX_MSG_SIZE) {
+    if (plainSz > WOLFSPDM_XFER_MSG_SIZE) {
         return WOLFSPDM_E_BUFFER_SMALL;
     }
 
@@ -180,7 +180,7 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
     Aes aes;
     byte iv[WOLFSPDM_AEAD_IV_SIZE];
     byte aad[16];
-    byte decrypted[WOLFSPDM_MAX_MSG_SIZE + 16];
+    byte decrypted[WOLFSPDM_XFER_MSG_SIZE + WOLFSPDM_SECURED_PAD];
     const byte* ciphertext;
     const byte* tag;
     word32 cipherLen;
@@ -346,25 +346,15 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
     return ret;
 }
 
-int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
+int wolfSPDM_SecuredXfer(WOLFSPDM_CTX* ctx,
     const byte* cmdPlain, word32 cmdSz,
     byte* rspPlain, word32* rspSz)
 {
-    byte encBuf[WOLFSPDM_MAX_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD];
-    byte rxBuf[WOLFSPDM_MAX_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD];
+    byte encBuf[WOLFSPDM_XFER_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD];
+    byte rxBuf[WOLFSPDM_XFER_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD];
     word32 encSz = sizeof(encBuf);
     word32 rxSz = sizeof(rxBuf);
     int rc;
-
-    if (ctx == NULL || cmdPlain == NULL || rspPlain == NULL || rspSz == NULL) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-#ifndef WOLFSPDM_NO_MEAS
-    /* Only back-to-back GET_MEASUREMENTS extend L1/L2 */
-    if (ctx->l1l2State == WOLFSPDM_RUN_OPEN) {
-        ctx->l1l2State = WOLFSPDM_RUN_LIVE;
-    }
-#endif
 
     rc = wolfSPDM_EncryptInternal(ctx, cmdPlain, cmdSz, encBuf, &encSz);
     if (rc == WOLFSPDM_SUCCESS) {
@@ -375,5 +365,28 @@ int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
     }
 
     return rc;
+}
+
+int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
+    const byte* cmdPlain, word32 cmdSz,
+    byte* rspPlain, word32* rspSz)
+{
+    if (ctx == NULL || cmdPlain == NULL || rspPlain == NULL || rspSz == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+#ifndef WOLFSPDM_NO_MEAS
+    /* Only back-to-back GET_MEASUREMENTS extend L1/L2 */
+    if (ctx->l1l2State == WOLFSPDM_RUN_OPEN) {
+        ctx->l1l2State = WOLFSPDM_RUN_LIVE;
+    }
+#endif
+#ifndef WOLFSPDM_NO_CHUNK
+    if (wolfSPDM_ChunkOn(ctx)) {
+        return wolfSPDM_ChunkExchange(ctx, 1, cmdPlain, cmdSz, rspPlain,
+            rspSz);
+    }
+#endif
+
+    return wolfSPDM_SecuredXfer(ctx, cmdPlain, cmdSz, rspPlain, rspSz);
 }
 

@@ -618,6 +618,7 @@ const char* wolfSPDM_GetErrorString(int error)
         case WOLFSPDM_E_KEY_UPDATE:       return "Key update failed";
         case WOLFSPDM_E_MEASUREMENT:      return "Measurement response invalid";
         case WOLFSPDM_E_CHALLENGE:        return "Challenge response invalid";
+        case WOLFSPDM_E_CHUNK:            return "Chunked transfer failed";
         default:                          return "Unknown error";
     }
 }

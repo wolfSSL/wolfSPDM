@@ -63,10 +63,11 @@ make check
 | `--enable-debug` | Debug output with `-g -O0` (default: `-O2`) |
 | `--enable-dynamic-mem` | Use heap allocation for `WOLFSPDM_CTX` (default: static) |
 | `--disable-mldsa` / `--disable-mlkem` | Force off ML-DSA signatures / ML-KEM key exchange (default: auto-follow wolfSSL) |
-| `--disable-chunking` | Compile out SPDM 1.2 message chunking (default: enabled) |
+| `--disable-chunking` | Compile out CHUNK_SEND/CHUNK_GET large message chunking (default: enabled) |
 | `--disable-meas` / `--disable-challenge` | Compile out GET_MEASUREMENTS / CHALLENGE (default: enabled) |
 | `--disable-heartbeat` / `--disable-key-update` | Compile out HEARTBEAT / KEY_UPDATE (default: enabled) |
 | `--with-wolfssl=PATH` | wolfSSL installation path |
+| `CFLAGS=-DWOLFSPDM_DATA_TRANSFER_SIZE=N` | Largest single SPDM message, 42 to 4096 (default 4096). Smaller values shrink the per-message transport buffers; larger messages then travel in CHUNK_SEND/CHUNK_GET pieces when the responder supports chunking |
 
 ### Memory Modes
 

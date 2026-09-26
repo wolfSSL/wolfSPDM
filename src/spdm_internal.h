@@ -193,6 +193,9 @@ struct WOLFSPDM_CTX {
     word32 trustedCASz;
     byte   slotMask;
     byte   currentSlotId;
+#ifndef WOLFSPDM_NO_CHUNK
+    byte   chunkHandle;         /* next CHUNK_SEND handle */
+#endif
     byte   certChain[WOLFSPDM_MAX_CERT_CHAIN];
     byte   trustedCA[WOLFSPDM_MAX_TRUSTED_CA];
 #endif
@@ -232,6 +235,15 @@ static WC_INLINE int wolfSPDM_IsTcgMode(const WOLFSPDM_CTX* ctx)
            ctx->mode == WOLFSPDM_MODE_NATIONS ||
            ctx->mode == WOLFSPDM_MODE_NATIONS_PSK;
 }
+
+#ifndef WOLFSPDM_NO_CHUNK
+/* Chunking applies once both sides set CHUNK_CAP; TCG profiles never chunk */
+static WC_INLINE int wolfSPDM_ChunkOn(const WOLFSPDM_CTX* ctx)
+{
+    return !wolfSPDM_IsTcgMode(ctx) &&
+           (ctx->rspCaps & SPDM_CAP_CHUNK_CAP) != 0;
+}
+#endif
 
 /* ----- Byte-Order Helpers ----- */
 
@@ -477,6 +489,20 @@ WOLFSPDM_TEST_API int wolfSPDM_DeriveUpdatedKeys(WOLFSPDM_CTX* ctx,
 WOLFSPDM_API int wolfSPDM_SendReceive(WOLFSPDM_CTX* ctx,
     const byte* txBuf, word32 txSz,
     byte* rxBuf, word32* rxSz);
+/* One secured message each way, never chunked */
+WOLFSPDM_LOCAL int wolfSPDM_SecuredXfer(WOLFSPDM_CTX* ctx,
+    const byte* cmdPlain, word32 cmdSz, byte* rspPlain, word32* rspSz);
+
+#ifndef WOLFSPDM_NO_CHUNK
+/* Request/response that chunks with CHUNK_SEND and CHUNK_GET as needed */
+WOLFSPDM_TEST_API int wolfSPDM_ChunkExchange(WOLFSPDM_CTX* ctx, int secured,
+    const byte* req, word32 reqSz, byte* rsp, word32* rspSz);
+WOLFSPDM_LOCAL int wolfSPDM_ClearExchange(WOLFSPDM_CTX* ctx,
+    const byte* req, word32 reqSz, byte* rsp, word32* rspSz);
+#else
+#define wolfSPDM_ClearExchange(ctx, req, reqSz, rsp, rspSz) \
+    wolfSPDM_SendReceive(ctx, req, reqSz, rsp, rspSz)
+#endif
 
 #ifdef WOLFSPDM_DEBUG
 WOLFSPDM_API void wolfSPDM_DebugPrint(WOLFSPDM_CTX* ctx, const char* fmt, ...)

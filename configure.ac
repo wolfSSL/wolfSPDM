@@ -100,6 +100,15 @@ if test "x$enable_heartbeat" = "xno"; then
     AC_DEFINE([WOLFSPDM_NO_HEARTBEAT], [1], [Disable HEARTBEAT])
 fi
 
+AC_ARG_ENABLE([chunking],
+    [AS_HELP_STRING([--disable-chunking], [Disable CHUNK_SEND/CHUNK_GET large message chunking (default: enabled)])],
+    [enable_chunking=$enableval],
+    [enable_chunking=yes])
+
+if test "x$enable_chunking" = "xno"; then
+    AC_DEFINE([WOLFSPDM_NO_CHUNK], [1], [Disable large message chunking])
+fi
+
 AC_ARG_ENABLE([meas],
     [AS_HELP_STRING([--disable-meas], [Disable GET_MEASUREMENTS attestation (default: enabled)])],
     [enable_meas=$enableval],
@@ -198,6 +207,7 @@ echo "  Version:     $PACKAGE_VERSION"
 echo "  Debug:       $enable_debug"
 echo "  Dynamic mem: $enable_dynamic_mem"
 echo "  Standard:    $enable_cert"
+echo "  Chunking:    $enable_chunking"
 echo "  Meas:        $enable_meas"
 echo "  Challenge:   $enable_challenge"
 echo "  Heartbeat:   $enable_heartbeat"

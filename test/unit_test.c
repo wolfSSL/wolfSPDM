@@ -80,6 +80,40 @@ static int dummy_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf, word32 txSz,
     return -1;
 }
 
+/* Raw r||s ECDSA P-384 signature, as a responder produces it */
+static int test_ecc_sign(WC_RNG* rng, const byte* priv, const byte* pub,
+    const byte* hash, byte* sig)
+{
+    ecc_key key;
+    byte der[ECC_MAX_SIG_SIZE];
+    byte r[WOLFSPDM_ECC_KEY_SIZE];
+    byte s[WOLFSPDM_ECC_KEY_SIZE];
+    word32 derSz = sizeof(der);
+    word32 rSz = sizeof(r);
+    word32 sSz = sizeof(s);
+    int rc;
+
+    rc = wc_ecc_init(&key);
+    if (rc == 0) {
+        rc = wc_ecc_import_unsigned(&key, pub, pub + WOLFSPDM_ECC_KEY_SIZE,
+            priv, ECC_SECP384R1);
+    }
+    if (rc == 0) {
+        rc = wc_ecc_sign_hash(hash, WOLFSPDM_HASH_SIZE, der, &derSz, rng,
+            &key);
+    }
+    if (rc == 0) {
+        rc = wc_ecc_sig_to_rs(der, derSz, r, &rSz, s, &sSz);
+    }
+    if (rc == 0) {
+        XMEMSET(sig, 0, WOLFSPDM_ECC_SIG_SIZE);
+        XMEMCPY(sig + WOLFSPDM_ECC_KEY_SIZE - rSz, r, rSz);
+        XMEMCPY(sig + WOLFSPDM_ECC_SIG_SIZE - sSz, s, sSz);
+    }
+    wc_ecc_free(&key);
+    return rc;
+}
+
 /* ----- Context Tests ----- */
 
 #ifdef WOLFSPDM_DYNAMIC_MEMORY
@@ -582,7 +616,6 @@ static int test_key_exchange_rsp_hmac_check(void)
     byte signMsgHash[WOLFSPDM_HASH_SIZE];
     byte th1[WOLFSPDM_HASH_SIZE];
     byte sigRaw[WOLFSPDM_ECC_SIG_SIZE];
-    word32 sigRawSz = WOLFSPDM_ECC_SIG_SIZE;
     byte expectedHmac[WOLFSPDM_HASH_SIZE];
     const char* ctxStr = "responder-key_exchange_rsp signing";
     const word32 ctxStrLen = 34;
@@ -615,7 +648,6 @@ static int test_key_exchange_rsp_hmac_check(void)
     }
     XMEMCPY(ltPub, ltPubX, 48);
     XMEMCPY(ltPub + 48, ltPubY, 48);
-    ASSERT_SUCCESS(wolfSPDM_SetRequesterKeyPair(ctx, ltPriv, 48, ltPub, 96));
     ASSERT_SUCCESS(wolfSPDM_SetResponderPubKey(ctx, ltPub, 96));
 
     /* Our ephemeral ECDH key (requester side). Some wolfSSL builds
@@ -671,10 +703,9 @@ static int test_key_exchange_rsp_hmac_check(void)
     ASSERT_SUCCESS(wolfSPDM_Sha384Hash(signMsgHash,
         signMsg, signMsgLen, NULL, 0, NULL, 0));
 
-    /* Sign with long-term key; wolfSPDM_SignHash pads R||S to 96 bytes */
-    sigRawSz = WOLFSPDM_ECC_SIG_SIZE;
-    ASSERT_SUCCESS(wolfSPDM_SignHash(ctx, signMsgHash, WOLFSPDM_HASH_SIZE,
-        sigRaw, &sigRawSz));
+    /* Sign with the long-term key as R||S, 96 bytes */
+    ASSERT_SUCCESS(test_ecc_sign(&ctx->rng, ltPriv, ltPub, signMsgHash,
+        sigRaw));
     XMEMCPY(&keRsp[138], sigRaw, WOLFSPDM_ECC_SIG_SIZE);
 
     /* TH1 = Hash(partial || signature) */
@@ -1142,6 +1173,7 @@ static int test_nations_psk_message_format(void)
 }
 #endif /* WOLFSPDM_NATIONS */
 
+#ifndef WOLFSPDM_NO_MCTP
 static int test_decrypt_overflow(void)
 {
     /* Static to avoid 4KB+ on stack; cipherLen must exceed
@@ -1172,6 +1204,7 @@ static int test_decrypt_overflow(void)
     TEST_CTX_FREE();
     TEST_PASS();
 }
+#endif
 
 static int test_oob_read_error(void)
 {
@@ -1315,6 +1348,7 @@ static int test_key_zeroing(void)
 
 /* ----- Group A: Public API Coverage ----- */
 
+#ifdef WOLFSPDM_MUTUAL_AUTH
 static int test_set_requester_key_pair(void)
 {
     byte privKey[48], pubKey[96];
@@ -1340,6 +1374,7 @@ static int test_set_requester_key_pair(void)
     TEST_CTX_FREE();
     TEST_PASS();
 }
+#endif
 
 static int test_connect_null_args(void)
 {
@@ -1989,6 +2024,7 @@ static int test_export_ephemeral_pub_key(void)
     TEST_PASS();
 }
 
+#ifdef WOLFSPDM_MUTUAL_AUTH
 static int test_sign_hash_null_args(void)
 {
     byte hash[48], sig[128];
@@ -2009,6 +2045,7 @@ static int test_sign_hash_null_args(void)
     TEST_CTX_FREE();
     TEST_PASS();
 }
+#endif
 
 static int test_verify_signature_null_args(void)
 {
@@ -2029,6 +2066,7 @@ static int test_verify_signature_null_args(void)
     TEST_PASS();
 }
 
+#ifdef WOLFSPDM_MUTUAL_AUTH
 static int test_sign_verify_roundtrip(void)
 {
     byte hash[48], sig[128];
@@ -2072,6 +2110,7 @@ static int test_sign_verify_roundtrip(void)
     TEST_CTX_FREE();
     TEST_PASS();
 }
+#endif
 
 /* ----- Group G: Internal KDF ----- */
 
@@ -2190,6 +2229,7 @@ static int test_build_key_exchange_null_args(void)
     TEST_PASS();
 }
 
+#ifndef WOLFSPDM_NO_MCTP
 static int test_build_key_exchange_format(void)
 {
     byte buf[256];
@@ -2211,6 +2251,7 @@ static int test_build_key_exchange_format(void)
     TEST_CTX_FREE();
     TEST_PASS();
 }
+#endif
 
 static int test_build_key_exchange_mode_opaque(void)
 {
@@ -2219,11 +2260,16 @@ static int test_build_key_exchange_mode_opaque(void)
     TEST_CTX_SETUP_V12();
     printf("test_build_key_exchange_mode_opaque...\n");
 
+#ifndef WOLFSPDM_NO_MCTP
     /* Standard mode: cert slot 0 and the 20-byte version list */
     ASSERT_SUCCESS(wolfSPDM_BuildKeyExchange(ctx, buf, &bufSz));
     ASSERT_EQ(buf[3], 0x00, "standard SlotID must be 0");
     ASSERT_EQ(bufSz, (word32)(136 + 22), "standard KEY_EXCHANGE size");
     ASSERT_EQ(buf[136], 0x14, "standard OpaqueLength must be 20");
+#else
+    ASSERT_EQ(wolfSPDM_BuildKeyExchange(ctx, buf, &bufSz),
+        WOLFSPDM_E_NOT_AVAILABLE, "no standard KEY_EXCHANGE without MCTP");
+#endif
 
 #ifdef WOLFSPDM_NUVOTON
     ASSERT_SUCCESS(wolfSPDM_SetMode(ctx, WOLFSPDM_MODE_NUVOTON));
@@ -2248,6 +2294,7 @@ static int test_build_key_exchange_mode_opaque(void)
 
 /* libspdm pads MCTP records with up to 32 random bytes; a full-size message
  * with the most padding must still decrypt */
+#ifndef WOLFSPDM_NO_MCTP
 static int test_decrypt_mctp_random_padding(void)
 {
     static byte inner[3 + WOLFSPDM_XFER_MSG_SIZE + 32];
@@ -2291,7 +2338,9 @@ static int test_decrypt_mctp_random_padding(void)
     TEST_CTX_FREE();
     TEST_PASS();
 }
+#endif
 
+#ifndef WOLFSPDM_NO_MCTP
 static int test_decrypt_rejects_wrong_mctp_type(void)
 {
     /* An authenticated record whose inner MCTP type is not SPDM must be
@@ -2333,6 +2382,7 @@ static int test_decrypt_rejects_wrong_mctp_type(void)
     TEST_CTX_FREE();
     TEST_PASS();
 }
+#endif
 
 static int test_build_finish_null_args(void)
 {
@@ -2396,6 +2446,7 @@ static int test_encrypt_internal_null_args(void)
     TEST_PASS();
 }
 
+#ifndef WOLFSPDM_NO_MCTP
 static int test_encrypt_decrypt_roundtrip(void)
 {
     byte plain[16] = "Hello SPDM test!";
@@ -2436,6 +2487,7 @@ static int test_encrypt_decrypt_roundtrip(void)
     TEST_CTX_FREE();
     TEST_PASS();
 }
+#endif
 
 #ifdef WOLFSPDM_TCG
 static int test_encrypt_decrypt_roundtrip_tcg(void)
@@ -3255,9 +3307,10 @@ static int test_derive_updated_keys(void)
 
 #endif /* !WOLFSPDM_NO_KEY_UPDATE */
 
-#if !defined(WOLFSPDM_NO_KEY_UPDATE) || !defined(WOLFSPDM_NO_MEAS) || \
-    !defined(WOLFSPDM_NO_CHALLENGE) || !defined(WOLFSPDM_NO_CHUNK)
-/* Loopback responder: a mirrored context that answers requests */
+#if (!defined(WOLFSPDM_NO_KEY_UPDATE) || !defined(WOLFSPDM_NO_MEAS) || \
+    !defined(WOLFSPDM_NO_CHALLENGE) || !defined(WOLFSPDM_NO_CHUNK)) && \
+    !defined(WOLFSPDM_NO_MCTP)
+/* Loopback responder: a mirrored context that answers requests over MCTP */
 static WOLFSPDM_CTX g_peer;
 static int g_peerRejects;
 
@@ -3340,7 +3393,6 @@ static int test_peer_sign(const char* label, word32 labelSz, const byte* req,
     word32 reqSz, byte* rsp, word32* rspSz)
 {
     byte digest[WOLFSPDM_HASH_SIZE];
-    word32 sigSz = WOLFSPDM_ECC_SIG_SIZE;
     int rc;
 
     rc = test_peer_run_add(req, reqSz, rsp, *rspSz);
@@ -3353,14 +3405,14 @@ static int test_peer_sign(const char* label, word32 labelSz, const byte* req,
             digest, digest);
     }
     if (rc == 0) {
-        rc = wolfSPDM_SignHash(&g_peer, digest, sizeof(digest),
-            rsp + *rspSz, &sigSz);
+        rc = test_ecc_sign(&g_peer.rng, test_rsp_leaf_priv,
+            test_rsp_leaf_pub, digest, rsp + *rspSz);
     }
     if (rc == 0) {
         if (g_peerTamper) {
             rsp[*rspSz] ^= 0x01;
         }
-        *rspSz += sigSz;
+        *rspSz += WOLFSPDM_ECC_SIG_SIZE;
     }
     return rc;
 }
@@ -3779,9 +3831,6 @@ static void test_session_loopback(WOLFSPDM_CTX* ctx)
     ctx->vcaLen = ctx->transcriptLen;
     wolfSPDM_SetResponderPubKey(ctx, test_rsp_leaf_pub,
         sizeof(test_rsp_leaf_pub));
-    wolfSPDM_SetRequesterKeyPair(p, test_rsp_leaf_priv,
-        sizeof(test_rsp_leaf_priv), test_rsp_leaf_pub,
-        sizeof(test_rsp_leaf_pub));
     g_peerRunOpen = 0;
     g_peerTamper = 0;
 #endif
@@ -3805,6 +3854,7 @@ static void test_session_loopback(WOLFSPDM_CTX* ctx)
 
 #ifndef WOLFSPDM_NO_KEY_UPDATE
 
+#ifndef WOLFSPDM_NO_MCTP
 static int test_key_update_loopback(void)
 {
     byte reqKey[WOLFSPDM_AEAD_KEY_SIZE];
@@ -3860,6 +3910,7 @@ static int test_key_update_loopback(void)
     TEST_CTX_FREE();
     TEST_PASS();
 }
+#endif
 #endif /* !WOLFSPDM_NO_KEY_UPDATE */
 
 #ifndef WOLFSPDM_NO_MEAS
@@ -4264,7 +4315,9 @@ int main(void)
     test_nations_psk_kdf();
     test_nations_psk_message_format();
 #endif
+#ifndef WOLFSPDM_NO_MCTP
     test_decrypt_overflow();
+#endif
     test_oob_read_error();
     test_constant_time_hmac();
     test_setdebug_truncation();
@@ -4273,7 +4326,9 @@ int main(void)
     /* ----- NEW COVERAGE TESTS ----- */
 
     /* Public API coverage */
+#ifdef WOLFSPDM_MUTUAL_AUTH
     test_set_requester_key_pair();
+#endif
     test_connect_null_args();
     test_get_version_no_io();
     test_key_exchange_no_io();
@@ -4316,9 +4371,13 @@ int main(void)
     /* Internal crypto */
     test_sha384_hash();
     test_export_ephemeral_pub_key();
+#ifdef WOLFSPDM_MUTUAL_AUTH
     test_sign_hash_null_args();
+#endif
     test_verify_signature_null_args();
+#ifdef WOLFSPDM_MUTUAL_AUTH
     test_sign_verify_roundtrip();
+#endif
 
     /* Internal KDF */
     test_derive_handshake_keys();
@@ -4327,16 +4386,24 @@ int main(void)
 
     /* Internal message building */
     test_build_key_exchange_null_args();
+#ifndef WOLFSPDM_NO_MCTP
     test_build_key_exchange_format();
+#endif
     test_build_key_exchange_mode_opaque();
     test_build_finish_null_args();
     test_build_finish_format();
 
     /* Internal encrypt/decrypt */
     test_encrypt_internal_null_args();
+#ifndef WOLFSPDM_NO_MCTP
     test_encrypt_decrypt_roundtrip();
+#endif
+#ifndef WOLFSPDM_NO_MCTP
     test_decrypt_rejects_wrong_mctp_type();
+#endif
+#ifndef WOLFSPDM_NO_MCTP
     test_decrypt_mctp_random_padding();
+#endif
 #ifndef WOLFSPDM_NO_CERT
     test_parse_capabilities();
     test_negotiate_algorithms_roundtrip();
@@ -4353,7 +4420,9 @@ int main(void)
 #ifndef WOLFSPDM_NO_KEY_UPDATE
     test_key_update_msgs();
     test_derive_updated_keys();
+#ifndef WOLFSPDM_NO_MCTP
     test_key_update_loopback();
+#endif
 #endif
 #ifndef WOLFSPDM_NO_MEAS
     test_measurements_msgs();

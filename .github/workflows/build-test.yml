@@ -76,12 +76,18 @@ jobs:
   feature-config:
     name: features / ${{ matrix.variant }}
     runs-on: ubuntu-latest
+    env:
+      # Standalone builds carry none of the TPM side, pure TCG builds none of
+      # the standard requester
+      TPM_SYMS: 'wolfSPDM_(TCG_.*|Nuvoton_.*|Nations_.*|Resp[A-Z].*|.*Psk.*|SetPSK|ConnectTCG|.*TcgClear.*|.*VendorDefined|SetRequesterKey.*|SignHash|GetConnectionHandle|GetFipsIndicator)'
+      STD_SYMS: 'wolfSPDM_(GetCapabilities|BuildGetCapabilities|ParseCapabilities|NegotiateAlgorithms|BuildNegotiateAlgorithms|ParseAlgorithms|GetDigests|ParseDigests|GetCertificate|ParseCertificate|ValidateCertChain|SetTrustedCAs|AllowUntrustedCerts|ConnectStandard|.*Measurement.*|.*Challenge.*|M1Start|M1Add|AttestFree|ChunkExchange|ClearExchange)'
     strategy:
       fail-fast: false
       matrix:
         include:
           - variant: core
             configure: ''
+            forbid: tpm
           - variant: tcg
             configure: '--enable-tcg'
           - variant: tcg-psk
@@ -92,14 +98,21 @@ jobs:
             configure: '--enable-nations'
           - variant: tcg-responder
             configure: '--enable-tcg --enable-responder'
+          - variant: tcg-pure
+            configure: '--enable-nuvoton --enable-nations --enable-responder --disable-mctp'
+            forbid: std
           - variant: no-session-ext
             configure: '--disable-heartbeat --disable-key-update'
+            forbid: tpm
           - variant: no-attest
             configure: '--disable-meas --disable-challenge'
+            forbid: tpm
           - variant: no-chunking
             configure: '--disable-chunking'
+            forbid: tpm
           - variant: lean
             configure: '--disable-cert --disable-heartbeat --disable-key-update'
+            forbid: tpm
 
     steps:
     - uses: actions/checkout@v4
@@ -142,6 +155,19 @@ jobs:
       run: make check
       env:
         LD_LIBRARY_PATH: ${{ github.workspace }}/src/.libs:$HOME/wolfssl-install/lib
+
+    - name: Check the other side is compiled out
+      if: matrix.forbid != ''
+      run: |
+        case "${{ matrix.forbid }}" in
+          tpm) re="$TPM_SYMS" ;;
+          std) re="$STD_SYMS" ;;
+        esac
+        bad=$(nm --defined-only .libs/libwolfspdm.so | awk '{print $3}' |
+              grep -E "^${re}$" || true)
+        if [ -n "$bad" ]; then
+          echo "Unexpected symbols:"; echo "$bad"; exit 1
+        fi
 
     - name: Upload test logs on failure
       if: failure()

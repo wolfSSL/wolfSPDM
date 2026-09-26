@@ -309,6 +309,7 @@ int wolfSPDM_VerifySignature(WOLFSPDM_CTX* ctx, const byte* hash, word32 hashSz,
 
 /* ----- ECDSA Signing (P-384) ----- */
 
+#ifdef WOLFSPDM_MUTUAL_AUTH
 int wolfSPDM_SignHash(WOLFSPDM_CTX* ctx, const byte* hash, word32 hashSz,
     byte* sig, word32* sigSz)
 {
@@ -378,4 +379,4 @@ int wolfSPDM_SignHash(WOLFSPDM_CTX* ctx, const byte* hash, word32 hashSz,
 
     return (rc == 0) ? WOLFSPDM_SUCCESS : WOLFSPDM_E_CRYPTO_FAIL;
 }
-
+#endif /* WOLFSPDM_MUTUAL_AUTH */

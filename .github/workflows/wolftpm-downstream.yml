@@ -94,6 +94,16 @@ jobs:
           LD_LIBRARY_PATH: ${{ format('{0}/wolfssl-install/lib', env.HOME) }}
         run: ./src/spdm/unit_test
 
+      # The TPM profile compiles none of the standard requester
+      - name: Check the standard requester is compiled out
+        run: |
+          re='wolfSPDM_(GetCapabilities|BuildGetCapabilities|ParseCapabilities|NegotiateAlgorithms|BuildNegotiateAlgorithms|ParseAlgorithms|GetDigests|ParseDigests|GetCertificate|ParseCertificate|ValidateCertChain|SetTrustedCAs|AllowUntrustedCerts|ConnectStandard|.*Measurement.*|.*Challenge.*|M1Start|M1Add|AttestFree|ChunkExchange|ClearExchange|.*Heartbeat.*|.*KeyUpdate.*|DeriveUpdatedKeys)'
+          bad=$(nm --defined-only src/.libs/libwolftpm.so | awk '{print $3}' |
+                grep -E "^${re}$" || true)
+          if [ -n "$bad" ]; then
+            echo "Unexpected symbols:"; echo "$bad"; exit 1
+          fi
+
       - name: Test unavailable vendor rejection
         if: matrix.reject != ''
         env:

@@ -169,6 +169,7 @@ int wolfSPDM_SetResponderPubKey(WOLFSPDM_CTX* ctx,
     return WOLFSPDM_SUCCESS;
 }
 
+#ifdef WOLFSPDM_MUTUAL_AUTH
 int wolfSPDM_SetRequesterKeyPair(WOLFSPDM_CTX* ctx,
     const byte* privKey, word32 privKeySz,
     const byte* pubKey, word32 pubKeySz)
@@ -189,6 +190,7 @@ int wolfSPDM_SetRequesterKeyPair(WOLFSPDM_CTX* ctx,
 
     return WOLFSPDM_SUCCESS;
 }
+#endif
 
 #ifdef WOLFSPDM_TCG
 int wolfSPDM_SetRequesterKeyTPMT(WOLFSPDM_CTX* ctx,

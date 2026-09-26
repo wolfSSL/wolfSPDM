@@ -80,11 +80,21 @@ if test "x$enable_dynamic_mem" = "xyes"; then
     AC_DEFINE([WOLFSPDM_DYNAMIC_MEMORY], [1], [Enable dynamic memory allocation])
 fi
 
+# MCTP secured messages carry the standard requester; a pure TCG build drops both
+AC_ARG_ENABLE([mctp],
+    [AS_HELP_STRING([--disable-mctp], [Drop MCTP secured messages and the standard requester for a pure TCG build (default: enabled)])],
+    [enable_mctp=$enableval],
+    [enable_mctp=yes])
+
 # Standard certificate-based requester (DSP0274 flow for non-TPM responders)
 AC_ARG_ENABLE([cert],
     [AS_HELP_STRING([--disable-cert], [Disable the standard certificate-based requester (default: enabled)])],
     [enable_cert=$enableval],
     [enable_cert=yes])
+
+if test "x$enable_mctp" = "xno"; then
+    enable_cert=no
+fi
 
 if test "x$enable_cert" = "xno"; then
     AC_DEFINE([WOLFSPDM_NO_CERT], [1], [Disable the standard certificate requester])
@@ -174,6 +184,12 @@ fi
 if test "x$enable_responder" = "xyes" && test "x$enable_tcg" != "xyes"; then
     AC_MSG_ERROR([--enable-responder requires --enable-tcg])
 fi
+if test "x$enable_mctp" = "xno"; then
+    if test "x$enable_tcg" != "xyes"; then
+        AC_MSG_ERROR([--disable-mctp requires --enable-tcg or a TCG vendor])
+    fi
+    AC_DEFINE([WOLFSPDM_NO_MCTP], [1], [Drop MCTP secured messages])
+fi
 
 if test "x$enable_tcg" = "xyes"; then
     AC_DEFINE([WOLFSPDM_TCG], [1], [Enable the TCG SPDM binding])
@@ -201,11 +217,19 @@ AM_CONDITIONAL([BUILD_RESPONDER], [test "x$enable_responder" = "xyes"])
 AC_CONFIG_FILES([Makefile wolfspdm.pc])
 AC_OUTPUT
 
+# These ride on the certificate flow and are compiled out without it
+if test "x$enable_cert" = "xno"; then
+    enable_chunking=no
+    enable_meas=no
+    enable_challenge=no
+fi
+
 echo ""
 echo "wolfSPDM configuration summary:"
 echo "  Version:     $PACKAGE_VERSION"
 echo "  Debug:       $enable_debug"
 echo "  Dynamic mem: $enable_dynamic_mem"
+echo "  MCTP:        $enable_mctp"
 echo "  Standard:    $enable_cert"
 echo "  Chunking:    $enable_chunking"
 echo "  Meas:        $enable_meas"

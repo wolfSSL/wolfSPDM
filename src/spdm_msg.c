@@ -57,11 +57,13 @@ static int wolfSPDM_BuildSimpleMsg(WOLFSPDM_CTX* ctx, byte msgCode,
  * coordinates, followed by the mode's OpaqueData block. */
 #define WOLFSPDM_KEYEX_FIXED_SZ  (40 + 2 * WOLFSPDM_ECC_KEY_SIZE)
 
+#ifndef WOLFSPDM_NO_MCTP
 /* Standard SPDM 1.2+ secured message version list: OpaqueLength(2) + 20 */
 static const byte kexOpaqueStd[] = {
     0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x01, 0x01,
     0x03, 0x00, 0x10, 0x00, 0x11, 0x00, 0x12, 0x00, 0x00, 0x00
 };
+#endif
 #ifdef WOLFSPDM_NUVOTON
 static const byte kexOpaqueNuvoton[] = {
     0x0c, 0x00, 0x00, 0x00, 0x05, 0x00, 0x01, 0x01, 0x01, 0x00, 0x10, 0x00,
@@ -76,8 +78,13 @@ static const byte kexOpaqueNations[] = { 0x00, 0x00 };
 static void wolfSPDM_KeyExOpaque(const WOLFSPDM_CTX* ctx,
     const byte** opaque, word32* opaqueSz)
 {
+#ifndef WOLFSPDM_NO_MCTP
     *opaque = kexOpaqueStd;
     *opaqueSz = (word32)sizeof(kexOpaqueStd);
+#else
+    *opaque = NULL;
+    *opaqueSz = 0;
+#endif
 #ifdef WOLFSPDM_NUVOTON
     if (ctx->mode == WOLFSPDM_MODE_NUVOTON) {
         *opaque = kexOpaqueNuvoton;
@@ -110,6 +117,9 @@ int wolfSPDM_BuildKeyExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
         return WOLFSPDM_E_INVALID_ARG;
     }
     wolfSPDM_KeyExOpaque(ctx, &opaque, &opaqueSz);
+    if (opaque == NULL) {
+        return WOLFSPDM_E_NOT_AVAILABLE;
+    }
 
     /* Require exactly the encoded request size */
     SPDM_CHECK_BUILD_ARGS(ctx, buf, bufSz, WOLFSPDM_KEYEX_FIXED_SZ + opaqueSz);
@@ -221,8 +231,10 @@ int wolfSPDM_BuildFinish(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
 {
     byte th2Hash[WOLFSPDM_HASH_SIZE];
     byte verifyData[WOLFSPDM_HASH_SIZE];
+#ifdef WOLFSPDM_MUTUAL_AUTH
     byte signature[WOLFSPDM_ECC_POINT_SIZE];  /* 96 bytes for P-384 */
     word32 sigSz = sizeof(signature);
+#endif
     word32 offset = 4;  /* Start after header */
     word32 minSz;
     int mutualAuth = 0;
@@ -233,6 +245,7 @@ int wolfSPDM_BuildFinish(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
         return WOLFSPDM_E_INVALID_ARG;
     }
 
+#ifdef WOLFSPDM_MUTUAL_AUTH
     /* Mutual auth is enabled when the responder requested it (MutAuthRequested
      * bit 0) AND we have a requester key pair to sign with */
     if ((ctx->mutAuthRequested & 0x01) && ctx->flags.hasReqKeyPair) {
@@ -241,6 +254,7 @@ int wolfSPDM_BuildFinish(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
             "(MutAuth=0x%02x ReqSlot=0x%02x)\n",
             ctx->mutAuthRequested, ctx->reqSlotIdParam);
     }
+#endif
 
     /* Check buffer size: header(4) + [OpaqueLength(2) for 1.4+] +
      * [signature(96) for mutual auth] + HMAC(48) */
@@ -294,6 +308,7 @@ int wolfSPDM_BuildFinish(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
     if (rc == WOLFSPDM_SUCCESS)
         XMEMCPY(ctx->th2, th2Hash, WOLFSPDM_HASH_SIZE);
 
+#ifdef WOLFSPDM_MUTUAL_AUTH
     /* Mutual auth: sign TH2, add signature to transcript, recompute TH2 */
     if (rc == WOLFSPDM_SUCCESS && mutualAuth) {
         byte signMsgHash[WOLFSPDM_HASH_SIZE];
@@ -312,6 +327,7 @@ int wolfSPDM_BuildFinish(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
         if (rc == WOLFSPDM_SUCCESS)
             rc = wolfSPDM_TranscriptHash(ctx, th2Hash);
     }
+#endif
 
     /* RequesterVerifyData = HMAC(reqFinishedKey, TH2) */
     if (rc == WOLFSPDM_SUCCESS)
@@ -328,7 +344,9 @@ int wolfSPDM_BuildFinish(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
     /* Always zero sensitive stack buffers */
     wc_ForceZero(th2Hash, sizeof(th2Hash));
     wc_ForceZero(verifyData, sizeof(verifyData));
+#ifdef WOLFSPDM_MUTUAL_AUTH
     wc_ForceZero(signature, sizeof(signature));
+#endif
     return rc;
 }
 

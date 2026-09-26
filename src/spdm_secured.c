@@ -108,6 +108,9 @@ int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
     } else
 #endif
     {
+#ifdef WOLFSPDM_NO_MCTP
+        return WOLFSPDM_E_NOT_AVAILABLE;
+#else
         /* MCTP format (per DSP0277):
          * Plaintext: AppDataLen(2 LE) + MCTP header(0x05) + SPDM message
          * Header: SessionID(4 LE) + SeqNum(2 LE) + Length(2 LE) = 8 bytes
@@ -142,6 +145,7 @@ int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
 
         aadSz = 8;
         XMEMCPY(aad, enc, aadSz);
+#endif
     }
 
     /* Build IV: BaseIV XOR sequence number (DSP0277) */
@@ -237,6 +241,9 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
     } else
 #endif
     {
+#ifdef WOLFSPDM_NO_MCTP
+        return WOLFSPDM_E_NOT_AVAILABLE;
+#else
         word32 rspSessionId;
         word16 rspSeqNum, rspLen;
         hdrSz = 8;
@@ -271,6 +278,7 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
         tag = enc + hdrSz + cipherLen;
         XMEMCPY(aad, enc, aadSz);
         wolfSPDM_BuildIV(iv, ctx->rspDataIv, (word64)rspSeqNum);
+#endif
     }
 
     /* ----- AES-GCM decrypt (shared for both transports) ----- */
@@ -323,6 +331,9 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
         } else
 #endif
         {
+#ifdef WOLFSPDM_NO_MCTP
+            ret = WOLFSPDM_E_NOT_AVAILABLE;
+#else
             /* MCTP: AppDataLen(2) || MCTP(1) || SPDM msg */
             if (appDataLen < 1 || cipherLen < (word32)(2 + appDataLen) ||
                 *plainSz < (word32)(appDataLen - 1)) {
@@ -334,6 +345,7 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
                 *plainSz = appDataLen - 1;
                 ret = WOLFSPDM_SUCCESS;
             }
+#endif
         }
     }
 

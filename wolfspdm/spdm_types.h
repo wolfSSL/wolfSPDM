@@ -189,6 +189,10 @@ extern "C" {
 #if defined(NO_ASN) && !defined(WOLFSPDM_NO_CERT)
     #define WOLFSPDM_NO_CERT
 #endif
+/* A pure TCG build drops MCTP secured messages and the standard requester */
+#if defined(WOLFSPDM_NO_MCTP) && !defined(WOLFSPDM_NO_CERT)
+    #define WOLFSPDM_NO_CERT
+#endif
 /* MCTP records may carry up to 32 random bytes (DSP0277); the TCG binding
  * only pads to 16, and wolfTPM speaks nothing else */
 #ifdef WOLFSPDM_PROFILE_TPM
@@ -350,6 +354,17 @@ extern "C" {
 #if (defined(WOLFSPDM_NUVOTON) || defined(WOLFSPDM_NATIONS)) && \
     !defined(WOLFSPDM_TCG)
     #define WOLFSPDM_TCG
+#endif
+
+#if defined(WOLFSPDM_NO_MCTP) && !defined(WOLFSPDM_TCG)
+    #error "WOLFSPDM_NO_MCTP leaves no transport without the TCG binding"
+#endif
+
+/* Requester identity key for TCG GIVE_PUB mutual auth; wolfTPM builds keep
+ * the API whether or not the binding is compiled */
+#if (defined(WOLFSPDM_TCG) || defined(WOLFSPDM_PROFILE_TPM)) && \
+    !defined(WOLFSPDM_MUTUAL_AUTH)
+    #define WOLFSPDM_MUTUAL_AUTH
 #endif
 
 /* Single-message buffers; the TCG binding is never chunked */

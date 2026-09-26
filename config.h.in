@@ -89,6 +89,9 @@
 /* Disable KEY_UPDATE */
 #undef WOLFSPDM_NO_KEY_UPDATE
 
+/* Drop MCTP secured messages */
+#undef WOLFSPDM_NO_MCTP
+
 /* Disable GET_MEASUREMENTS */
 #undef WOLFSPDM_NO_MEAS
 

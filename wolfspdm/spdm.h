@@ -106,10 +106,12 @@ WOLFSPDM_API WOLFSPDM_MODE wolfSPDM_GetMode(WOLFSPDM_CTX* ctx);
  * Required before a TCG identity-key connection. */
 WOLFSPDM_API int wolfSPDM_SetResponderPubKey(WOLFSPDM_CTX* ctx,
     const byte* pubKey, word32 pubKeySz);
-/* Set requester key pair for mutual auth (privKey=48, pubKey=96 bytes) */
+#ifdef WOLFSPDM_MUTUAL_AUTH
+/* Set requester key pair for TCG mutual auth (privKey=48, pubKey=96 bytes) */
 WOLFSPDM_API int wolfSPDM_SetRequesterKeyPair(WOLFSPDM_CTX* ctx,
     const byte* privKey, word32 privKeySz,
     const byte* pubKey, word32 pubKeySz);
+#endif
 /* Cap the negotiated version (0x12-0x14, 0 = build default) */
 WOLFSPDM_API int wolfSPDM_SetMaxVersion(WOLFSPDM_CTX* ctx, byte maxVersion);
 

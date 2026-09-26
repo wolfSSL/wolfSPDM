@@ -178,10 +178,12 @@ struct WOLFSPDM_CTX {
     byte mutAuthRequested;      /* MutAuthRequested from KEY_EXCHANGE_RSP */
     byte reqSlotIdParam;        /* ReqSlotIDParam from KEY_EXCHANGE_RSP */
 
-    /* Requester's identity key pair (for mutual auth) */
+#ifdef WOLFSPDM_MUTUAL_AUTH
+    /* Requester's identity key pair (TCG GIVE_PUB mutual auth) */
     byte reqPrivKey[WOLFSPDM_ECC_KEY_SIZE];
     word32 reqPrivKeyLen;
     byte reqPubKey[WOLFSPDM_ECC_POINT_SIZE];
+#endif
 
 #ifndef WOLFSPDM_NO_CERT
     /* Standard requester: negotiated limits and responder cert chain */
@@ -219,7 +221,9 @@ struct WOLFSPDM_CTX {
         unsigned int rngInitialized     : 1;
         unsigned int ephemeralKeyInit   : 1;
         unsigned int hasRspPubKey       : 1;
+#ifdef WOLFSPDM_MUTUAL_AUTH
         unsigned int hasReqKeyPair      : 1;
+#endif
 #ifndef WOLFSPDM_NO_CERT
         unsigned int allowUntrustedCert : 1;
         unsigned int rspKeyFromCert     : 1;
@@ -231,9 +235,14 @@ struct WOLFSPDM_CTX {
 /* The vendor modes select TCG binding framing and pinned-key identity */
 static WC_INLINE int wolfSPDM_IsTcgMode(const WOLFSPDM_CTX* ctx)
 {
+#ifdef WOLFSPDM_TCG
     return ctx->mode == WOLFSPDM_MODE_NUVOTON ||
            ctx->mode == WOLFSPDM_MODE_NATIONS ||
            ctx->mode == WOLFSPDM_MODE_NATIONS_PSK;
+#else
+    (void)ctx;
+    return 0;
+#endif
 }
 
 #ifndef WOLFSPDM_NO_CHUNK
@@ -371,8 +380,10 @@ WOLFSPDM_API int wolfSPDM_ExportEphemeralPubKey(WOLFSPDM_CTX* ctx,
 WOLFSPDM_API int wolfSPDM_ComputeSharedSecret(WOLFSPDM_CTX* ctx,
     const byte* peerPubKeyX, const byte* peerPubKeyY);
 WOLFSPDM_API int wolfSPDM_GetRandom(WOLFSPDM_CTX* ctx, byte* out, word32 outSz);
+#ifdef WOLFSPDM_MUTUAL_AUTH
 WOLFSPDM_API int wolfSPDM_SignHash(WOLFSPDM_CTX* ctx, const byte* hash, word32 hashSz,
     byte* sig, word32* sigSz);
+#endif
 WOLFSPDM_TEST_API int wolfSPDM_ExtractEccPoint(const byte* pubKey,
     word32 pubKeySz, const byte** pubKeyX, const byte** pubKeyY);
 WOLFSPDM_API int wolfSPDM_VerifySignature(WOLFSPDM_CTX* ctx,

@@ -206,6 +206,11 @@ extern "C" {
 #if defined(WOLFSPDM_PROFILE_TPM) && !defined(WOLFSPDM_NO_KEY_UPDATE)
     #define WOLFSPDM_NO_KEY_UPDATE
 #endif
+/* Application messages ride MCTP; WOLFSPDM_LEAN is the older spelling */
+#if (defined(WOLFSPDM_PROFILE_TPM) || defined(WOLFSPDM_NO_MCTP) || \
+     defined(WOLFSPDM_LEAN)) && !defined(WOLFSPDM_NO_APP_DATA)
+    #define WOLFSPDM_NO_APP_DATA
+#endif
 /* Attestation needs the certificate flow (VCA transcript, chain hash) */
 #if defined(WOLFSPDM_NO_CERT) && !defined(WOLFSPDM_NO_MEAS)
     #define WOLFSPDM_NO_MEAS

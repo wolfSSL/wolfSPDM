@@ -74,6 +74,9 @@
 /* Enable Nations SPDM vendor commands */
 #undef WOLFSPDM_NATIONS
 
+/* Disable the application data API */
+#undef WOLFSPDM_NO_APP_DATA
+
 /* Disable the standard certificate requester */
 #undef WOLFSPDM_NO_CERT
 

@@ -40,7 +40,8 @@
  * Full message: Header || Ciphertext || Tag (16)
  */
 
-int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
+/* appMsg: plain is an MCTP application message carrying its own type byte */
+static int wolfSPDM_EncryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
     const byte* plain, word32 plainSz,
     byte* enc, word32* encSz)
 {
@@ -109,6 +110,7 @@ int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
 #endif
     {
 #ifdef WOLFSPDM_NO_MCTP
+        (void)appMsg;
         return WOLFSPDM_E_NOT_AVAILABLE;
 #else
         /* MCTP format (per DSP0277):
@@ -116,7 +118,7 @@ int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
          * Header: SessionID(4 LE) + SeqNum(2 LE) + Length(2 LE) = 8 bytes
          * AAD = Header
          */
-        word16 appDataLen = (word16)(1 + plainSz);
+        word16 appDataLen = (word16)(appMsg ? plainSz : 1 + plainSz);
         word16 encDataLen = (word16)(2 + appDataLen);
 
         /* MCTP carries a 16-bit sequence number; fail rather than let the wire
@@ -135,8 +137,12 @@ int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
 
         /* Build plaintext: AppDataLen(2 LE) || MCTP header(0x05) || SPDM msg */
         SPDM_Set16LE(plainBuf, appDataLen);
-        plainBuf[2] = MCTP_MESSAGE_TYPE_SPDM;
-        XMEMCPY(&plainBuf[3], plain, plainSz);
+        if (appMsg) {
+            XMEMCPY(&plainBuf[2], plain, plainSz);
+        } else {
+            plainBuf[2] = MCTP_MESSAGE_TYPE_SPDM;
+            XMEMCPY(&plainBuf[3], plain, plainSz);
+        }
 
         /* Build header/AAD: SessionID(4 LE) + SeqNum(2 LE) + Length(2 LE) */
         SPDM_Set32LE(&enc[0], ctx->sessionId);
@@ -177,7 +183,15 @@ int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
     return (rc == 0) ? WOLFSPDM_SUCCESS : WOLFSPDM_E_CRYPTO_FAIL;
 }
 
-int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
+int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
+    const byte* plain, word32 plainSz,
+    byte* enc, word32* encSz)
+{
+    return wolfSPDM_EncryptRecord(ctx, 0, plain, plainSz, enc, encSz);
+}
+
+/* appMsg: return the MCTP application message with its type byte */
+static int wolfSPDM_DecryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
     const byte* enc, word32 encSz,
     byte* plain, word32* plainSz)
 {
@@ -242,6 +256,7 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
 #endif
     {
 #ifdef WOLFSPDM_NO_MCTP
+        (void)appMsg;
         return WOLFSPDM_E_NOT_AVAILABLE;
 #else
         word32 rspSessionId;
@@ -335,14 +350,15 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
             ret = WOLFSPDM_E_NOT_AVAILABLE;
 #else
             /* MCTP: AppDataLen(2) || MCTP(1) || SPDM msg */
+            word32 typeSz = appMsg ? 0 : 1;
             if (appDataLen < 1 || cipherLen < (word32)(2 + appDataLen) ||
-                *plainSz < (word32)(appDataLen - 1)) {
+                *plainSz < (word32)(appDataLen - typeSz)) {
                 ret = WOLFSPDM_E_BUFFER_SMALL;
-            } else if (decrypted[2] != MCTP_MESSAGE_TYPE_SPDM) {
+            } else if (!appMsg && decrypted[2] != MCTP_MESSAGE_TYPE_SPDM) {
                 ret = WOLFSPDM_E_DECRYPT_FAIL;
             } else {
-                XMEMCPY(plain, &decrypted[3], appDataLen - 1);
-                *plainSz = appDataLen - 1;
+                XMEMCPY(plain, &decrypted[2 + typeSz], appDataLen - typeSz);
+                *plainSz = appDataLen - typeSz;
                 ret = WOLFSPDM_SUCCESS;
             }
 #endif
@@ -356,6 +372,13 @@ int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
 
     wc_ForceZero(decrypted, sizeof(decrypted));
     return ret;
+}
+
+int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
+    const byte* enc, word32 encSz,
+    byte* plain, word32* plainSz)
+{
+    return wolfSPDM_DecryptRecord(ctx, 0, enc, encSz, plain, plainSz);
 }
 
 int wolfSPDM_SecuredXfer(WOLFSPDM_CTX* ctx,
@@ -402,3 +425,101 @@ int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
     return wolfSPDM_SecuredXfer(ctx, cmdPlain, cmdSz, rspPlain, rspSz);
 }
 
+
+#ifndef WOLFSPDM_NO_APP_DATA
+int wolfSPDM_EncryptMessage(WOLFSPDM_CTX* ctx,
+    const byte* plain, word32 plainSz, byte* enc, word32* encSz)
+{
+    if (ctx == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    if (ctx->state != WOLFSPDM_STATE_CONNECTED) {
+        return WOLFSPDM_E_NOT_CONNECTED;
+    }
+    return wolfSPDM_EncryptRecord(ctx, 0, plain, plainSz, enc, encSz);
+}
+
+int wolfSPDM_DecryptMessage(WOLFSPDM_CTX* ctx,
+    const byte* enc, word32 encSz, byte* plain, word32* plainSz)
+{
+    if (ctx == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    if (ctx->state != WOLFSPDM_STATE_CONNECTED) {
+        return WOLFSPDM_E_NOT_CONNECTED;
+    }
+    return wolfSPDM_DecryptRecord(ctx, 0, enc, encSz, plain, plainSz);
+}
+
+static int wolfSPDM_AppDataReady(const WOLFSPDM_CTX* ctx)
+{
+    if (ctx->state != WOLFSPDM_STATE_CONNECTED) {
+        return WOLFSPDM_E_NOT_CONNECTED;
+    }
+    /* The TCG binding only carries SPDM request/response pairs */
+    if (wolfSPDM_IsTcgMode(ctx)) {
+        return WOLFSPDM_E_NOT_AVAILABLE;
+    }
+    if (ctx->ioCb == NULL) {
+        return WOLFSPDM_E_IO_FAIL;
+    }
+    return WOLFSPDM_SUCCESS;
+}
+
+int wolfSPDM_SendData(WOLFSPDM_CTX* ctx, const byte* data, word32 dataSz)
+{
+    byte encBuf[WOLFSPDM_XFER_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD];
+    word32 encSz = sizeof(encBuf);
+    word32 rxSz = 0;
+    int rc;
+
+    if (ctx == NULL || data == NULL || dataSz == 0) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    /* Type 0x05 would reach the peer as an SPDM request */
+    if (data[0] == MCTP_MESSAGE_TYPE_SPDM) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+
+    rc = wolfSPDM_AppDataReady(ctx);
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_EncryptRecord(ctx, 1, data, dataSz, encBuf, &encSz);
+    }
+    if (rc == WOLFSPDM_SUCCESS &&
+            ctx->ioCb(ctx, encBuf, encSz, NULL, &rxSz, ctx->ioUserCtx) != 0) {
+        rc = WOLFSPDM_E_IO_FAIL;
+    }
+
+    return rc;
+}
+
+int wolfSPDM_ReceiveData(WOLFSPDM_CTX* ctx, byte* data, word32* dataSz)
+{
+    byte rxBuf[WOLFSPDM_XFER_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD];
+    word32 rxSz = sizeof(rxBuf);
+    int rc;
+
+    if (ctx == NULL || data == NULL || dataSz == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+
+    rc = wolfSPDM_AppDataReady(ctx);
+    if (rc == WOLFSPDM_SUCCESS &&
+            (ctx->ioCb(ctx, NULL, 0, rxBuf, &rxSz, ctx->ioUserCtx) != 0 ||
+             rxSz > sizeof(rxBuf))) {
+        rc = WOLFSPDM_E_IO_FAIL;
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_DecryptRecord(ctx, 1, rxBuf, rxSz, data, dataSz);
+    }
+    /* The responder answers undeliverable application data in SPDM */
+    if (rc == WOLFSPDM_SUCCESS && data[0] == MCTP_MESSAGE_TYPE_SPDM) {
+        if (*dataSz >= 4 && data[2] == SPDM_ERROR) {
+            ctx->lastPeerErrorCode = data[3];
+        }
+        rc = WOLFSPDM_E_PEER_ERROR;
+    }
+
+    return rc;
+}
+#endif /* !WOLFSPDM_NO_APP_DATA */

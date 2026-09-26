@@ -3,7 +3,8 @@
 # spdm_test.sh - SPDM emulator test script
 #
 # Tests SPDM protocol with libspdm emulator (session + measurements + challenge
-# + heartbeat + key update) across SPDM versions 1.2, 1.3, and 1.4.
+# + heartbeat + key update + application data) across SPDM versions 1.2, 1.3,
+# and 1.4.
 #
 # Usage:
 #   ./spdm_test.sh                     # Run emulator tests
@@ -35,7 +36,8 @@ usage() {
     echo "Usage: $0 [path-to-spdm_demo]"
     echo ""
     echo "Runs SPDM emulator tests (session, measurements, challenge,"
-    echo "heartbeat, key update) across SPDM versions 1.2, 1.3, and 1.4."
+    echo "heartbeat, key update, application data) across SPDM versions 1.2,"
+    echo "1.3, and 1.4."
     echo ""
     echo "Expects spdm_responder_emu to be found via:"
     echo "  1. SPDM_EMU_PATH environment variable"
@@ -269,6 +271,10 @@ for VER in 1.2 1.3 1.4; do
     # Session + key update
     run_test "Key update (SPDM $VER)" "$VER" \
         "$SPDM_DEMO" --emu --key-update --ver "$VER"
+
+    # Session + PLDM GetTID as an MCTP application message
+    run_test "Application data (SPDM $VER)" "$VER" \
+        "$SPDM_DEMO" --app-data --ver "$VER"
 
     echo ""
 done

@@ -13,7 +13,7 @@ wolfSPDM is a lightweight C library implementing [SPDM 1.2 / 1.3 / 1.4](https://
 - **Optional `--enable-dynamic-mem`** for heap-allocated contexts on small-stack platforms
 - **Full session lifecycle:** key exchange, finish, encrypted messaging, heartbeat keep-alive, key update
 - **Device attestation:** signed / unsigned `GET_MEASUREMENTS`, sessionless `CHALLENGE_AUTH`, certificate-chain validation against trusted root CAs
-- **Compatible with DMTF spdm-emu** for interoperability testing (18-test matrix across 1.2 / 1.3 / 1.4)
+- **Compatible with DMTF spdm-emu** for interoperability testing (21-test matrix across 1.2 / 1.3 / 1.4)
 - **Path to FIPS 140-3** via wolfCrypt FIPS Certificate #4718 (sole crypto dependency)
 
 ## Supported Operations (RFC / DSP0274)
@@ -21,7 +21,7 @@ wolfSPDM is a lightweight C library implementing [SPDM 1.2 / 1.3 / 1.4](https://
 | Operation | DSP0274 | wolfSPDM API |
 |---|---|---|
 | Session establishment | Sec. 10.7 | `wolfSPDM_Connect`, `wolfSPDM_KeyExchange`, `wolfSPDM_Finish` |
-| Encrypted application data | DSP0277 | `wolfSPDM_SecuredExchange`, `wolfSPDM_SendData`, `wolfSPDM_ReceiveData` |
+| Encrypted application data | DSP0277 | `wolfSPDM_SecuredExchange`, `wolfSPDM_SendData`, `wolfSPDM_ReceiveData`, `wolfSPDM_EncryptMessage`, `wolfSPDM_DecryptMessage` |
 | Measurements (signed/unsigned) | Sec. 10.11 | `wolfSPDM_GetMeasurements`, `wolfSPDM_GetMeasurementBlock` |
 | Challenge authentication (sessionless) | Sec. 10.8 | `wolfSPDM_Challenge` |
 | Session keep-alive | Sec. 10.10 | `wolfSPDM_Heartbeat` |
@@ -66,6 +66,7 @@ make check
 | `--disable-chunking` | Compile out CHUNK_SEND/CHUNK_GET large message chunking (default: enabled) |
 | `--disable-meas` / `--disable-challenge` | Compile out GET_MEASUREMENTS / CHALLENGE (default: enabled) |
 | `--disable-heartbeat` / `--disable-key-update` | Compile out HEARTBEAT / KEY_UPDATE (default: enabled) |
+| `--disable-app-data` | Compile out `SendData`/`ReceiveData` MCTP application messages and `Encrypt`/`DecryptMessage` (default: enabled) |
 | `--enable-tcg` / `--enable-nuvoton` / `--enable-nations` / `--enable-psk` / `--enable-responder` | TPM side: TCG SPDM binding, vendor commands, PSK and the responder (default: all disabled, so a standalone build carries none of it) |
 | `--disable-mctp` | Pure TCG build: drops MCTP secured messages and the whole standard requester (needs `--enable-tcg` or a vendor) |
 | `--with-wolfssl=PATH` | wolfSSL installation path |
@@ -106,12 +107,12 @@ cd spdm-emu && mkdir build && cd build
 cmake -DARCH=x64 -DTOOLCHAIN=GCC -DTARGET=Release -DCRYPTO=mbedtls ..
 make copy_sample_key && make
 
-# Run the 18-test integration matrix from this repo
+# Run the 21-test integration matrix from this repo
 export SPDM_EMU_PATH=../spdm-emu/build/bin
 ./examples/spdm_test.sh
 ```
 
-The driver starts/stops `spdm_responder_emu` per test and runs six scenarios — Session, Signed Measurements, Unsigned Measurements, Challenge, Heartbeat, Key Update — across SPDM 1.2, 1.3, and 1.4 (18 tests total).
+The driver starts/stops `spdm_responder_emu` per test and runs seven scenarios — Session, Signed Measurements, Unsigned Measurements, Challenge, Heartbeat, Key Update, Application Data (PLDM GetTID) — across SPDM 1.2, 1.3, and 1.4 (21 tests total).
 
 ## Relationship to wolfTPM's SPDM
 

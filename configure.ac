@@ -110,6 +110,18 @@ if test "x$enable_heartbeat" = "xno"; then
     AC_DEFINE([WOLFSPDM_NO_HEARTBEAT], [1], [Disable HEARTBEAT])
 fi
 
+AC_ARG_ENABLE([app-data],
+    [AS_HELP_STRING([--disable-app-data], [Disable the MCTP application data API (default: enabled)])],
+    [enable_app_data=$enableval],
+    [enable_app_data=yes])
+
+if test "x$enable_mctp" = "xno"; then
+    enable_app_data=no
+fi
+if test "x$enable_app_data" = "xno"; then
+    AC_DEFINE([WOLFSPDM_NO_APP_DATA], [1], [Disable the application data API])
+fi
+
 AC_ARG_ENABLE([chunking],
     [AS_HELP_STRING([--disable-chunking], [Disable CHUNK_SEND/CHUNK_GET large message chunking (default: enabled)])],
     [enable_chunking=$enableval],
@@ -231,6 +243,7 @@ echo "  Debug:       $enable_debug"
 echo "  Dynamic mem: $enable_dynamic_mem"
 echo "  MCTP:        $enable_mctp"
 echo "  Standard:    $enable_cert"
+echo "  App data:    $enable_app_data"
 echo "  Chunking:    $enable_chunking"
 echo "  Meas:        $enable_meas"
 echo "  Challenge:   $enable_challenge"

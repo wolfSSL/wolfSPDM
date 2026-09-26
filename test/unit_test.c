@@ -2522,6 +2522,189 @@ static int test_encrypt_decrypt_roundtrip_tcg(void)
 }
 #endif /* WOLFSPDM_TCG */
 
+#ifndef WOLFSPDM_NO_APP_DATA
+/* One-slot mailbox standing in for a message-oriented MCTP link */
+static byte g_mbox[WOLFSPDM_XFER_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD];
+static word32 g_mboxSz;
+
+static int test_mbox_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf, word32 txSz,
+    byte* rxBuf, word32* rxSz, void* userCtx)
+{
+    (void)ctx;
+    (void)userCtx;
+    if (txBuf != NULL) {
+        /* SendData never waits for a reply */
+        if (rxBuf != NULL || rxSz == NULL || *rxSz != 0 ||
+                txSz > sizeof(g_mbox)) {
+            return -1;
+        }
+        XMEMCPY(g_mbox, txBuf, txSz);
+        g_mboxSz = txSz;
+        return 0;
+    }
+    if (txSz != 0 || rxBuf == NULL || g_mboxSz == 0 || g_mboxSz > *rxSz) {
+        return -1;
+    }
+    XMEMCPY(rxBuf, g_mbox, g_mboxSz);
+    *rxSz = g_mboxSz;
+    g_mboxSz = 0;
+    return 0;
+}
+
+/* Two connected contexts with mirrored keys sharing the mailbox */
+static void test_app_data_pair(WOLFSPDM_CTX* ctx, WOLFSPDM_CTX* p)
+{
+    wolfSPDM_Init(p);
+    ctx->spdmVersion = SPDM_VERSION_12;
+    p->spdmVersion = SPDM_VERSION_12;
+    ctx->sessionId = 0x00020001;
+    p->sessionId = 0x00020001;
+    ctx->state = WOLFSPDM_STATE_CONNECTED;
+    p->state = WOLFSPDM_STATE_CONNECTED;
+    XMEMSET(ctx->reqDataKey, 0x11, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMSET(ctx->rspDataKey, 0x22, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMSET(ctx->reqDataIv, 0x33, WOLFSPDM_AEAD_IV_SIZE);
+    XMEMSET(ctx->rspDataIv, 0x44, WOLFSPDM_AEAD_IV_SIZE);
+    XMEMCPY(p->reqDataKey, ctx->rspDataKey, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMCPY(p->rspDataKey, ctx->reqDataKey, WOLFSPDM_AEAD_KEY_SIZE);
+    XMEMCPY(p->reqDataIv, ctx->rspDataIv, WOLFSPDM_AEAD_IV_SIZE);
+    XMEMCPY(p->rspDataIv, ctx->reqDataIv, WOLFSPDM_AEAD_IV_SIZE);
+    wolfSPDM_SetIO(ctx, test_mbox_io_cb, NULL);
+    wolfSPDM_SetIO(p, test_mbox_io_cb, NULL);
+    g_mboxSz = 0;
+}
+
+static int test_app_data(void)
+{
+    /* PLDM GetTID and the reply spdm-emu gives it */
+    static const byte getTid[] = { 0x01, 0x80, 0x00, 0x02 };
+    static const byte tidRsp[] = { 0x01, 0x00, 0x00, 0x02, 0x00, 0x01 };
+    static const byte spdmErr[] = { SPDM_VERSION_12, SPDM_ERROR,
+        SPDM_ERROR_UNSUPPORTED_REQUEST, 0x00 };
+    static const byte asSpdm[] = { MCTP_MESSAGE_TYPE_SPDM, SPDM_VERSION_12,
+        SPDM_ERROR, 0x00, 0x00 };
+    static WOLFSPDM_CTX peer;
+    static byte big[WOLFSPDM_XFER_MSG_SIZE + 1];
+    byte buf[64];
+    byte enc[128];
+    word32 bufSz = sizeof(buf);
+    word32 encSz = sizeof(enc);
+    TEST_CTX_SETUP();
+
+    printf("test_app_data...\n");
+    XMEMSET(enc, 0, sizeof(enc));
+    ASSERT_EQ(wolfSPDM_SendData(NULL, getTid, sizeof(getTid)),
+        WOLFSPDM_E_INVALID_ARG, "NULL ctx");
+    ASSERT_EQ(wolfSPDM_SendData(ctx, NULL, sizeof(getTid)),
+        WOLFSPDM_E_INVALID_ARG, "NULL data");
+    ASSERT_EQ(wolfSPDM_ReceiveData(ctx, NULL, &bufSz),
+        WOLFSPDM_E_INVALID_ARG, "NULL data");
+    ASSERT_EQ(wolfSPDM_ReceiveData(ctx, buf, NULL),
+        WOLFSPDM_E_INVALID_ARG, "NULL size");
+    ASSERT_EQ(wolfSPDM_EncryptMessage(NULL, spdmErr, sizeof(spdmErr), enc,
+        &encSz), WOLFSPDM_E_INVALID_ARG, "NULL ctx");
+    ASSERT_EQ(wolfSPDM_DecryptMessage(NULL, enc, 32, buf, &bufSz),
+        WOLFSPDM_E_INVALID_ARG, "NULL ctx");
+
+    /* Nothing flows before the session is up */
+    wolfSPDM_SetIO(ctx, test_mbox_io_cb, NULL);
+    g_mboxSz = 0;
+    ASSERT_EQ(wolfSPDM_SendData(ctx, getTid, sizeof(getTid)),
+        WOLFSPDM_E_NOT_CONNECTED, "SendData before connect");
+    ASSERT_EQ(wolfSPDM_ReceiveData(ctx, buf, &bufSz),
+        WOLFSPDM_E_NOT_CONNECTED, "ReceiveData before connect");
+    ASSERT_EQ(wolfSPDM_EncryptMessage(ctx, spdmErr, sizeof(spdmErr), enc,
+        &encSz), WOLFSPDM_E_NOT_CONNECTED, "EncryptMessage before connect");
+    ASSERT_EQ(wolfSPDM_DecryptMessage(ctx, enc, 32, buf, &bufSz),
+        WOLFSPDM_E_NOT_CONNECTED, "DecryptMessage before connect");
+    ASSERT_EQ(g_mboxSz, 0, "Nothing sent before connect");
+
+    test_app_data_pair(ctx, &peer);
+
+    /* The application message keeps its own MCTP type inside the record */
+    ASSERT_SUCCESS(wolfSPDM_SendData(ctx, getTid, sizeof(getTid)));
+    ASSERT_EQ(g_mboxSz, 8 + 2 + sizeof(getTid) + WOLFSPDM_AEAD_TAG_SIZE,
+        "Record carries no extra type byte");
+    ASSERT_EQ(SPDM_Get32LE(g_mbox), 0x00020001, "Session ID in the header");
+    bufSz = sizeof(buf);
+    ASSERT_SUCCESS(wolfSPDM_ReceiveData(&peer, buf, &bufSz));
+    ASSERT_EQ(bufSz, sizeof(getTid), "Request size");
+    ASSERT_EQ(memcmp(buf, getTid, sizeof(getTid)), 0, "Request bytes");
+
+    ASSERT_SUCCESS(wolfSPDM_SendData(&peer, tidRsp, sizeof(tidRsp)));
+    bufSz = sizeof(buf);
+    ASSERT_SUCCESS(wolfSPDM_ReceiveData(ctx, buf, &bufSz));
+    ASSERT_EQ(bufSz, sizeof(tidRsp), "Response size");
+    ASSERT_EQ(memcmp(buf, tidRsp, sizeof(tidRsp)), 0, "Response bytes");
+    ASSERT_EQ(ctx->reqSeqNum, 1, "Request sequence advanced");
+    ASSERT_EQ(ctx->rspSeqNum, 1, "Response sequence advanced");
+
+    /* SPDM messages sealed for a caller-driven transport */
+    encSz = sizeof(enc);
+    ASSERT_SUCCESS(wolfSPDM_EncryptMessage(ctx, spdmErr, sizeof(spdmErr),
+        enc, &encSz));
+    bufSz = sizeof(buf);
+    ASSERT_SUCCESS(wolfSPDM_DecryptMessage(&peer, enc, encSz, buf, &bufSz));
+    ASSERT_EQ(bufSz, sizeof(spdmErr), "SPDM message size");
+    ASSERT_EQ(memcmp(buf, spdmErr, sizeof(spdmErr)), 0, "SPDM message bytes");
+
+    /* An SPDM ERROR in place of application data */
+    encSz = sizeof(g_mbox);
+    ASSERT_SUCCESS(wolfSPDM_EncryptMessage(&peer, spdmErr, sizeof(spdmErr),
+        g_mbox, &encSz));
+    g_mboxSz = encSz;
+    bufSz = sizeof(buf);
+    ASSERT_EQ(wolfSPDM_ReceiveData(ctx, buf, &bufSz), WOLFSPDM_E_PEER_ERROR,
+        "SPDM ERROR surfaces as a peer error");
+    ASSERT_EQ(wolfSPDM_GetLastPeerError(ctx), SPDM_ERROR_UNSUPPORTED_REQUEST,
+        "Peer error code recorded");
+
+    /* DecryptMessage only opens SPDM messages */
+    ASSERT_SUCCESS(wolfSPDM_SendData(&peer, tidRsp, sizeof(tidRsp)));
+    bufSz = sizeof(buf);
+    ASSERT_EQ(wolfSPDM_DecryptMessage(ctx, g_mbox, g_mboxSz, buf, &bufSz),
+        WOLFSPDM_E_DECRYPT_FAIL, "Application message is not SPDM");
+    g_mboxSz = 0;
+
+    ASSERT_EQ(wolfSPDM_SendData(ctx, asSpdm, sizeof(asSpdm)),
+        WOLFSPDM_E_INVALID_ARG, "MCTP type 0x05 is reserved for SPDM");
+    ASSERT_EQ(wolfSPDM_SendData(ctx, getTid, 0), WOLFSPDM_E_INVALID_ARG,
+        "Empty message");
+    big[0] = 0x01;
+    ASSERT_EQ(wolfSPDM_SendData(ctx, big, sizeof(big)),
+        WOLFSPDM_E_BUFFER_SMALL, "Oversized message");
+    ASSERT_EQ(g_mboxSz, 0, "Rejected messages are not sent");
+    bufSz = sizeof(buf);
+    ASSERT_EQ(wolfSPDM_ReceiveData(ctx, buf, &bufSz), WOLFSPDM_E_IO_FAIL,
+        "Empty link");
+
+    ASSERT_SUCCESS(wolfSPDM_SendData(&peer, tidRsp, sizeof(tidRsp)));
+    bufSz = sizeof(tidRsp) - 1;
+    ASSERT_EQ(wolfSPDM_ReceiveData(ctx, buf, &bufSz), WOLFSPDM_E_BUFFER_SMALL,
+        "Short output buffer");
+
+    ASSERT_SUCCESS(wolfSPDM_SendData(&peer, tidRsp, sizeof(tidRsp)));
+    g_mbox[10] ^= 0x01;
+    bufSz = sizeof(buf);
+    ASSERT_EQ(wolfSPDM_ReceiveData(ctx, buf, &bufSz), WOLFSPDM_E_DECRYPT_FAIL,
+        "Tampered record");
+
+#ifdef WOLFSPDM_TCG
+    ctx->mode = WOLFSPDM_MODE_NUVOTON;
+    ASSERT_EQ(wolfSPDM_SendData(ctx, getTid, sizeof(getTid)),
+        WOLFSPDM_E_NOT_AVAILABLE, "No application messages over TCG");
+    ctx->mode = WOLFSPDM_MODE_AUTO;
+#endif
+    ctx->ioCb = NULL;
+    ASSERT_EQ(wolfSPDM_SendData(ctx, getTid, sizeof(getTid)),
+        WOLFSPDM_E_IO_FAIL, "No transport");
+
+    wolfSPDM_Free(&peer);
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+#endif /* !WOLFSPDM_NO_APP_DATA */
+
 #ifdef WOLFSPDM_RESPONDER
 
 static int g_tpmCbInvocations = 0;
@@ -4413,6 +4596,9 @@ int main(void)
 #endif
 #ifdef WOLFSPDM_TCG
     test_encrypt_decrypt_roundtrip_tcg();
+#endif
+#ifndef WOLFSPDM_NO_APP_DATA
+    test_app_data();
 #endif
 #ifndef WOLFSPDM_NO_HEARTBEAT
     test_heartbeat_msgs();

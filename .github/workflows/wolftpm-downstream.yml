@@ -97,7 +97,7 @@ jobs:
       # The TPM profile compiles none of the standard requester
       - name: Check the standard requester is compiled out
         run: |
-          re='wolfSPDM_(GetCapabilities|BuildGetCapabilities|ParseCapabilities|NegotiateAlgorithms|BuildNegotiateAlgorithms|ParseAlgorithms|GetDigests|ParseDigests|GetCertificate|ParseCertificate|ValidateCertChain|SetTrustedCAs|AllowUntrustedCerts|ConnectStandard|.*Measurement.*|.*Challenge.*|M1Start|M1Add|AttestFree|ChunkExchange|ClearExchange|.*Heartbeat.*|.*KeyUpdate.*|DeriveUpdatedKeys)'
+          re='wolfSPDM_(GetCapabilities|BuildGetCapabilities|ParseCapabilities|NegotiateAlgorithms|BuildNegotiateAlgorithms|ParseAlgorithms|GetDigests|ParseDigests|GetCertificate|ParseCertificate|ValidateCertChain|SetTrustedCAs|AllowUntrustedCerts|ConnectStandard|.*Measurement.*|.*Challenge.*|M1Start|M1Add|AttestFree|ChunkExchange|ClearExchange|.*Heartbeat.*|.*KeyUpdate.*|DeriveUpdatedKeys|SendData|ReceiveData|EncryptMessage|DecryptMessage)'
           bad=$(nm --defined-only src/.libs/libwolftpm.so | awk '{print $3}' |
                 grep -E "^${re}$" || true)
           if [ -n "$bad" ]; then

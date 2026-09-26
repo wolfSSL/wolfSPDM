@@ -1,7 +1,8 @@
 /* spdm_demo.c
  *
  * wolfSPDM emulator demo - drives spdm-emu over TCP/MCTP for end-to-end
- * testing of session, measurements, challenge, heartbeat, and key update.
+ * testing of session, measurements, challenge, heartbeat, key update, and
+ * application data.
  *
  * Usage:
  *   spdm_demo --emu [--ver 1.2|1.3|1.4]
@@ -9,6 +10,7 @@
  *   spdm_demo --challenge [--ver ...]
  *   spdm_demo --heartbeat [--ver ...]
  *   spdm_demo --key-update [--ver ...]
+ *   spdm_demo --app-data [--ver ...]
  *
  * Picks up the spdm-emu install dir from $SPDM_EMU_PATH (used to find the
  * ca.cert.der for --challenge).
@@ -121,25 +123,37 @@ static int tcp_io_callback(WOLFSPDM_CTX* ctx,
     if (txSz > sizeof(sendBuf) - 13) {
         return -1;
     }
-    payloadSz = 1 + txSz;
 
-    /* Socket header: command(4,BE) + transport_type(4,BE) + size(4,BE) */
-    sendBuf[0] = 0x00; sendBuf[1] = 0x00; sendBuf[2] = 0x00; sendBuf[3] = 0x01;
-    sendBuf[4] = 0x00; sendBuf[5] = 0x00; sendBuf[6] = 0x00; sendBuf[7] = 0x01;
-    sendBuf[8]  = (byte)(payloadSz >> 24);
-    sendBuf[9]  = (byte)(payloadSz >> 16);
-    sendBuf[10] = (byte)(payloadSz >> 8);
-    sendBuf[11] = (byte)(payloadSz & 0xFF);
+    /* wolfSPDM_ReceiveData passes no request: only read the next message */
+    if (txBuf != NULL) {
+        payloadSz = 1 + txSz;
 
-    /* MCTP message type: 0x05 = SPDM, 0x06 = Secured SPDM. */
-    sendBuf[12] = is_secured_spdm(ctx, txBuf, txSz) ? 0x06 : 0x05;
+        /* Socket header: command(4,BE) + transport_type(4,BE) + size(4,BE) */
+        sendBuf[0] = 0x00; sendBuf[1] = 0x00; sendBuf[2] = 0x00;
+        sendBuf[3] = 0x01;
+        sendBuf[4] = 0x00; sendBuf[5] = 0x00; sendBuf[6] = 0x00;
+        sendBuf[7] = 0x01;
+        sendBuf[8]  = (byte)(payloadSz >> 24);
+        sendBuf[9]  = (byte)(payloadSz >> 16);
+        sendBuf[10] = (byte)(payloadSz >> 8);
+        sendBuf[11] = (byte)(payloadSz & 0xFF);
 
-    if (txSz > 0) {
-        memcpy(sendBuf + 13, txBuf, txSz);
+        /* MCTP message type: 0x05 = SPDM, 0x06 = Secured SPDM. */
+        sendBuf[12] = is_secured_spdm(ctx, txBuf, txSz) ? 0x06 : 0x05;
+
+        if (txSz > 0) {
+            memcpy(sendBuf + 13, txBuf, txSz);
+        }
+
+        if (send_all(tcpCtx->sockFd, sendBuf, (size_t)(12 + payloadSz)) != 0) {
+            return -1;
+        }
     }
 
-    if (send_all(tcpCtx->sockFd, sendBuf, (size_t)(12 + payloadSz)) != 0) {
-        return -1;
+    /* wolfSPDM_SendData passes no receive buffer: the reply waits for
+     * wolfSPDM_ReceiveData */
+    if (rxBuf == NULL) {
+        return 0;
     }
 
     if (recv_all(tcpCtx->sockFd, recvHdr, sizeof(recvHdr)) != 0) {
@@ -232,13 +246,15 @@ enum {
     MODE_MEAS,          /* --meas */
     MODE_CHALLENGE,     /* --challenge */
     MODE_HEARTBEAT,     /* --heartbeat */
-    MODE_KEY_UPDATE     /* --key-update */
+    MODE_KEY_UPDATE,    /* --key-update */
+    MODE_APP_DATA       /* --app-data */
 };
 
 static void usage(const char* argv0)
 {
     fprintf(stderr,
-        "Usage: %s {--emu|--meas|--challenge|--heartbeat|--key-update}\n"
+        "Usage: %s {--emu|--meas|--challenge|--heartbeat|--key-update|\n"
+        "          --app-data}\n"
         "          [--no-sig] [--ver 1.2|1.3|1.4]\n"
         "          [--kex ecdhe|mlkem512|mlkem768|mlkem1024] [--debug]\n"
         "\n"
@@ -473,6 +489,37 @@ static int do_key_update(WOLFSPDM_CTX* ctx)
 
 #endif
 
+#ifdef WOLFSPDM_HAS_APP_DATA
+/* PLDM GetTID as an MCTP application message; spdm-emu answers TID 1 */
+static int do_app_data(WOLFSPDM_CTX* ctx)
+{
+    static const byte getTid[] = { 0x01, 0x80, 0x00, 0x02 };
+    byte rsp[64];
+    word32 rspSz = sizeof(rsp);
+    int rc = do_session(ctx);
+    if (rc != WOLFSPDM_SUCCESS) return rc;
+
+    rc = wolfSPDM_SendData(ctx, getTid, sizeof(getTid));
+    if (rc == WOLFSPDM_SUCCESS) {
+        rc = wolfSPDM_ReceiveData(ctx, rsp, &rspSz);
+    }
+    if (rc != WOLFSPDM_SUCCESS) {
+        fprintf(stderr, "App data: %s (%d)\n",
+            wolfSPDM_GetErrorString(rc), rc);
+        return rc;
+    }
+    /* MCTP type, PLDM header (3), completion code, TID */
+    if (rspSz != 6 || rsp[0] != getTid[0] || rsp[2] != getTid[2] ||
+            rsp[3] != getTid[3] || rsp[4] != 0x00) {
+        fprintf(stderr, "App data: unexpected PLDM GetTID response\n");
+        return WOLFSPDM_E_FRAMING;
+    }
+    printf("PLDM GetTID over the session: TID %u\n", rsp[5]);
+    return WOLFSPDM_SUCCESS;
+}
+
+#endif
+
 int main(int argc, char* argv[])
 {
     static const struct option longOpts[] = {
@@ -482,6 +529,7 @@ int main(int argc, char* argv[])
         { "challenge",  no_argument,       0, 'c' },
         { "heartbeat",  no_argument,       0, 'b' },
         { "key-update", no_argument,       0, 'k' },
+        { "app-data",   no_argument,       0, 'a' },
         { "ver",        required_argument, 0, 'v' },
         { "kex",        required_argument, 0, 'K' },
         { "debug",      no_argument,       0, 'd' },
@@ -498,7 +546,7 @@ int main(int argc, char* argv[])
     int rc;
     WOLFSPDM_CTX* ctx = (WOLFSPDM_CTX*)g_ctxBuf;
 
-    while ((opt = getopt_long(argc, argv, "emncbkv:hd", longOpts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "emncbkav:hd", longOpts, NULL)) != -1) {
         switch (opt) {
             case 'e': mode = MODE_SESSION; break;
             case 'm': mode = MODE_MEAS; break;
@@ -506,6 +554,7 @@ int main(int argc, char* argv[])
             case 'c': mode = MODE_CHALLENGE; break;
             case 'b': mode = MODE_HEARTBEAT; break;
             case 'k': mode = MODE_KEY_UPDATE; break;
+            case 'a': mode = MODE_APP_DATA; break;
             case 'd': debug = 1; break;
             case 'v':
                 maxVer = parse_version(optarg);
@@ -616,6 +665,9 @@ int main(int argc, char* argv[])
 #endif
 #ifdef WOLFSPDM_HAS_KEY_UPDATE
         case MODE_KEY_UPDATE: rc = do_key_update(ctx);    break;
+#endif
+#ifdef WOLFSPDM_HAS_APP_DATA
+        case MODE_APP_DATA:   rc = do_app_data(ctx);      break;
 #endif
         default:
             fprintf(stderr, "Scenario not built into this wolfSPDM\n");

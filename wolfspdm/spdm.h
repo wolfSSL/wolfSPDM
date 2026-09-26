@@ -145,6 +145,25 @@ WOLFSPDM_API int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
     const byte* cmdPlain, word32 cmdSz,
     byte* rspPlain, word32* rspSz);
 
+#ifndef WOLFSPDM_NO_APP_DATA
+#define WOLFSPDM_HAS_APP_DATA
+/* Seal or open one SPDM message as a secured record for a caller-driven
+ * transport; at most WOLFSPDM_XFER_MSG_SIZE bytes of message */
+WOLFSPDM_API int wolfSPDM_EncryptMessage(WOLFSPDM_CTX* ctx,
+    const byte* plain, word32 plainSz, byte* enc, word32* encSz);
+WOLFSPDM_API int wolfSPDM_DecryptMessage(WOLFSPDM_CTX* ctx,
+    const byte* enc, word32 encSz, byte* plain, word32* plainSz);
+/* One MCTP application message per call, starting with its own MCTP message
+ * type (0x01 for PLDM, never 0x05). SendData calls the I/O callback with
+ * rxBuf NULL and *rxSz 0 (send only); ReceiveData calls it with txBuf NULL
+ * and txSz 0 (receive only). An SPDM ERROR in place of application data
+ * returns WOLFSPDM_E_PEER_ERROR. */
+WOLFSPDM_API int wolfSPDM_SendData(WOLFSPDM_CTX* ctx, const byte* data,
+    word32 dataSz);
+WOLFSPDM_API int wolfSPDM_ReceiveData(WOLFSPDM_CTX* ctx, byte* data,
+    word32* dataSz);
+#endif
+
 #ifndef WOLFSPDM_NO_MEAS
 #define WOLFSPDM_HAS_MEASUREMENTS
 /* Fetch measurements over the session; a signed request is verified against

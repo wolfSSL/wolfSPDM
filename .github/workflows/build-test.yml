@@ -80,7 +80,7 @@ jobs:
       # Standalone builds carry none of the TPM side, pure TCG builds none of
       # the standard requester
       TPM_SYMS: 'wolfSPDM_(TCG_.*|Nuvoton_.*|Nations_.*|Resp[A-Z].*|.*Psk.*|SetPSK|ConnectTCG|.*TcgClear.*|.*VendorDefined|SetRequesterKey.*|SignHash|GetConnectionHandle|GetFipsIndicator)'
-      STD_SYMS: 'wolfSPDM_(GetCapabilities|BuildGetCapabilities|ParseCapabilities|NegotiateAlgorithms|BuildNegotiateAlgorithms|ParseAlgorithms|GetDigests|ParseDigests|GetCertificate|ParseCertificate|ValidateCertChain|SetTrustedCAs|AllowUntrustedCerts|ConnectStandard|.*Measurement.*|.*Challenge.*|M1Start|M1Add|AttestFree|ChunkExchange|ClearExchange)'
+      STD_SYMS: 'wolfSPDM_(GetCapabilities|BuildGetCapabilities|ParseCapabilities|NegotiateAlgorithms|BuildNegotiateAlgorithms|ParseAlgorithms|GetDigests|ParseDigests|GetCertificate|ParseCertificate|ValidateCertChain|SetTrustedCAs|AllowUntrustedCerts|ConnectStandard|.*Measurement.*|.*Challenge.*|M1Start|M1Add|AttestFree|ChunkExchange|ClearExchange|SendData|ReceiveData|EncryptMessage|DecryptMessage)'
     strategy:
       fail-fast: false
       matrix:
@@ -110,8 +110,11 @@ jobs:
           - variant: no-chunking
             configure: '--disable-chunking'
             forbid: tpm
+          - variant: no-app-data
+            configure: '--disable-app-data'
+            forbid: tpm
           - variant: lean
-            configure: '--disable-cert --disable-heartbeat --disable-key-update'
+            configure: '--disable-cert --disable-heartbeat --disable-key-update --disable-app-data'
             forbid: tpm
 
     steps:

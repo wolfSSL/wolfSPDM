@@ -3,7 +3,8 @@
 # spdm_test.sh - SPDM emulator test script
 #
 # Tests SPDM protocol with libspdm emulator (session + measurements + challenge
-# + heartbeat + key update) across SPDM versions 1.2, 1.3, and 1.4.
+# + heartbeat + key update + application data) across SPDM versions 1.2, 1.3,
+# and 1.4.
 #
 # Usage:
 #   ./spdm_test.sh                     # Run emulator tests
@@ -13,6 +14,7 @@
 SPDM_DEMO="./examples/spdm_demo"
 PASS=0
 FAIL=0
+SKIP=0
 TOTAL=0
 EMU_PID=""
 EMU_LOG="/tmp/spdm_emu_$$.log"
@@ -34,12 +36,15 @@ usage() {
     echo "Usage: $0 [path-to-spdm_demo]"
     echo ""
     echo "Runs SPDM emulator tests (session, measurements, challenge,"
-    echo "heartbeat, key update) across SPDM versions 1.2, 1.3, and 1.4."
+    echo "heartbeat, key update, application data) across SPDM versions 1.2,"
+    echo "1.3, and 1.4."
     echo ""
     echo "Expects spdm_responder_emu to be found via:"
     echo "  1. SPDM_EMU_PATH environment variable"
     echo "  2. ../spdm-emu/build/bin/ (cloned next to wolfSPDM)"
     echo "  3. spdm_responder_emu in PATH"
+    echo ""
+    echo "SPDM_EMU_ARGS adds responder options, e.g. --cap ...,CHUNK"
 }
 
 # Parse arguments
@@ -140,9 +145,11 @@ start_emu() {
         echo "  Run 'make copy_sample_key' in the spdm-emu build directory"
     fi
 
+    # SPDM_EMU_ARGS adds responder options, e.g. --cap ...,CHUNK
     (cd "$EMU_DIR" && ./spdm_responder_emu --ver "$ver" \
         --hash SHA_384 --asym ECDSA_P384 \
-        --dhe SECP_384_R1 --aead AES_256_GCM >"$EMU_LOG" 2>&1) &
+        --dhe SECP_384_R1 --aead AES_256_GCM $SPDM_EMU_ARGS \
+        >"$EMU_LOG" 2>&1) &
     EMU_PID=$!
     sleep 2
 
@@ -192,9 +199,14 @@ run_test() {
         return 1
     fi
 
-    if "$@"; then
+    "$@"
+    local rc=$?
+    if [ $rc -eq 0 ]; then
         echo -e "  ${GREEN}PASS${NC}"
         PASS=$((PASS + 1))
+    elif [ $rc -eq 77 ]; then
+        echo -e "  ${YELLOW}SKIP (not built)${NC}"
+        SKIP=$((SKIP + 1))
     else
         echo -e "  ${RED}FAIL${NC}"
         FAIL=$((FAIL + 1))
@@ -260,6 +272,10 @@ for VER in 1.2 1.3 1.4; do
     run_test "Key update (SPDM $VER)" "$VER" \
         "$SPDM_DEMO" --emu --key-update --ver "$VER"
 
+    # Session + PLDM GetTID as an MCTP application message
+    run_test "Application data (SPDM $VER)" "$VER" \
+        "$SPDM_DEMO" --app-data --ver "$VER"
+
     echo ""
 done
 
@@ -267,7 +283,7 @@ done
 # Summary
 # ==========================================================================
 echo "=== Results ==="
-echo "Total: $TOTAL  Passed: $PASS  Failed: $FAIL"
+echo "Total: $TOTAL  Passed: $PASS  Skipped: $SKIP  Failed: $FAIL"
 if [ $FAIL -eq 0 ]; then
     echo -e "${GREEN}ALL TESTS PASSED${NC}"
     exit 0

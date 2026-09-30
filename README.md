@@ -9,11 +9,11 @@ wolfSPDM is a lightweight C library implementing [SPDM 1.2 / 1.3 / 1.4](https://
 - **Post-quantum signatures (SPDM 1.4):** optional ML-DSA-44 / 65 / 87 (FIPS 204), dual-stacked with ECDSA P-384 — see the [Post-Quantum ML-DSA](https://github.com/aidangarske/wolfSPDM/wiki/Post-Quantum-ML-DSA) wiki page
 - **Post-quantum key exchange (SPDM 1.4):** optional ML-KEM-512 / 768 / 1024 (FIPS 203), advertised alongside ECDHE P-384 — see the [Post-Quantum ML-KEM](https://github.com/aidangarske/wolfSPDM/wiki/Post-Quantum-ML-KEM) wiki page
 - **Fully post-quantum SPDM handshake:** ML-KEM key exchange + ML-DSA authentication (no classical asymmetric crypto), proven end-to-end against spdm-emu
-- **Zero-malloc by default:** static memory, ~32 KB context, ideal for constrained/embedded environments
+- **Zero-malloc by default:** static memory, ~19 KB context (~59 KB with ML-DSA), ideal for constrained/embedded environments
 - **Optional `--enable-dynamic-mem`** for heap-allocated contexts on small-stack platforms
 - **Full session lifecycle:** key exchange, finish, encrypted messaging, heartbeat keep-alive, key update
 - **Device attestation:** signed / unsigned `GET_MEASUREMENTS`, sessionless `CHALLENGE_AUTH`, certificate-chain validation against trusted root CAs
-- **Compatible with DMTF spdm-emu** for interoperability testing (18-test matrix across 1.2 / 1.3 / 1.4)
+- **Compatible with DMTF spdm-emu** for interoperability testing (21-test matrix across 1.2 / 1.3 / 1.4)
 - **Path to FIPS 140-3** via wolfCrypt FIPS Certificate #4718 (sole crypto dependency)
 
 ## Supported Operations (RFC / DSP0274)
@@ -21,7 +21,7 @@ wolfSPDM is a lightweight C library implementing [SPDM 1.2 / 1.3 / 1.4](https://
 | Operation | DSP0274 | wolfSPDM API |
 |---|---|---|
 | Session establishment | Sec. 10.7 | `wolfSPDM_Connect`, `wolfSPDM_KeyExchange`, `wolfSPDM_Finish` |
-| Encrypted application data | DSP0277 | `wolfSPDM_SecuredExchange`, `wolfSPDM_SendData`, `wolfSPDM_ReceiveData` |
+| Encrypted application data | DSP0277 | `wolfSPDM_SecuredExchange`, `wolfSPDM_SendData`, `wolfSPDM_ReceiveData`, `wolfSPDM_EncryptMessage`, `wolfSPDM_DecryptMessage` |
 | Measurements (signed/unsigned) | Sec. 10.11 | `wolfSPDM_GetMeasurements`, `wolfSPDM_GetMeasurementBlock` |
 | Challenge authentication (sessionless) | Sec. 10.8 | `wolfSPDM_Challenge` |
 | Session keep-alive | Sec. 10.10 | `wolfSPDM_Heartbeat` |
@@ -63,12 +63,18 @@ make check
 | `--enable-debug` | Debug output with `-g -O0` (default: `-O2`) |
 | `--enable-dynamic-mem` | Use heap allocation for `WOLFSPDM_CTX` (default: static) |
 | `--disable-mldsa` / `--disable-mlkem` | Force off ML-DSA signatures / ML-KEM key exchange (default: auto-follow wolfSSL) |
-| `--disable-chunking` | Compile out SPDM 1.2 message chunking (default: enabled) |
+| `--disable-chunking` | Compile out CHUNK_SEND/CHUNK_GET large message chunking (default: enabled) |
+| `--disable-meas` / `--disable-challenge` | Compile out GET_MEASUREMENTS / CHALLENGE (default: enabled) |
+| `--disable-heartbeat` / `--disable-key-update` | Compile out HEARTBEAT / KEY_UPDATE (default: enabled) |
+| `--disable-app-data` | Compile out `SendData`/`ReceiveData` MCTP application messages and `Encrypt`/`DecryptMessage` (default: enabled) |
+| `--enable-tcg` / `--enable-nuvoton` / `--enable-nations` / `--enable-psk` / `--enable-responder` | TPM side: TCG SPDM binding, vendor commands, PSK and the responder (default: all disabled, so a standalone build carries none of it) |
+| `--disable-mctp` | Pure TCG build: drops MCTP secured messages and the whole standard requester (needs `--enable-tcg` or a vendor) |
 | `--with-wolfssl=PATH` | wolfSSL installation path |
+| `CFLAGS=-DWOLFSPDM_DATA_TRANSFER_SIZE=N` | Largest single SPDM message, 42 to 4096 (default 4096). Smaller values shrink the per-message transport buffers; larger messages then travel in CHUNK_SEND/CHUNK_GET pieces when the responder supports chunking |
 
 ### Memory Modes
 
-**Static (default):** zero heap allocation. The caller provides a buffer (`WOLFSPDM_CTX_STATIC_SIZE` bytes, ~32 KB) and wolfSPDM operates entirely within it. Ideal for embedded and constrained environments where malloc is unavailable or undesirable.
+**Static (default):** zero heap allocation. The caller provides a buffer (`WOLFSPDM_CTX_STATIC_SIZE` bytes: 32 KB, 40 KB with ML-KEM, 72 KB with ML-DSA) and wolfSPDM operates entirely within it. Ideal for embedded and constrained environments where malloc is unavailable or undesirable.
 
 ```c
 #include <wolfspdm/spdm.h>
@@ -80,7 +86,7 @@ wolfSPDM_InitStatic(ctx, sizeof(spdmBuf));
 wolfSPDM_Free(ctx);
 ```
 
-**Dynamic (`--enable-dynamic-mem`):** context is heap-allocated via `wolfSPDM_New()`. Useful on platforms with small stacks where a ~32 KB local variable is impractical.
+**Dynamic (`--enable-dynamic-mem`):** context is heap-allocated via `wolfSPDM_New()`. Useful on platforms with small stacks where a large local variable is impractical.
 
 ```c
 #include <wolfspdm/spdm.h>
@@ -101,25 +107,23 @@ cd spdm-emu && mkdir build && cd build
 cmake -DARCH=x64 -DTOOLCHAIN=GCC -DTARGET=Release -DCRYPTO=mbedtls ..
 make copy_sample_key && make
 
-# Run the 18-test integration matrix from this repo
+# Run the 21-test integration matrix from this repo
 export SPDM_EMU_PATH=../spdm-emu/build/bin
 ./examples/spdm_test.sh
 ```
 
-The driver starts/stops `spdm_responder_emu` per test and runs six scenarios — Session, Signed Measurements, Unsigned Measurements, Challenge, Heartbeat, Key Update — across SPDM 1.2, 1.3, and 1.4 (18 tests total).
+The driver starts/stops `spdm_responder_emu` per test and runs seven scenarios — Session, Signed Measurements, Unsigned Measurements, Challenge, Heartbeat, Key Update, Application Data (PLDM GetTID) — across SPDM 1.2, 1.3, and 1.4 (21 tests total).
 
 ## Relationship to wolfTPM's SPDM
 
-wolfTPM ships its own SPDM implementation in `src/spdm/` for hardware-backed responders (Nuvoton NPCT75x, NSING NS350) with PSK / TCG-binding extensions. **wolfSPDM is a separate implementation** focused on the standard DSP0274 / DSP0277 requester for embedded use with `spdm-emu` and any standards-compliant peer. The two share heritage and are both designed for lightweight embedded use, with different deployment targets:
+wolfSPDM is the SPDM stack wolfTPM builds on. Its core is the SPDM code that wolfTPM shipped in `src/spdm/` (TCG binding, Nuvoton NPCT75x and Nations NS350 vendor commands, PSK, the responder), with the standard DMTF requester layered on top. Build switches decide which side is compiled, so a standalone build carries none of the TPM code and a wolfTPM build carries none of the standard requester:
 
-| | wolfSPDM | wolfTPM `src/spdm/` |
+| Build | Compiled in | `sizeof(WOLFSPDM_CTX)` (arm64) |
 |---|---|---|
-| Role | Requester only | Requester + responder |
-| Scope | Pure standard SPDM 1.2 / 1.3 / 1.4 | Same, plus PSK / TCG / Nuvoton / Nations vendor bindings |
-| Target | Embedded / spdm-emu / generic SPDM peer | TPM hardware (Nuvoton, NS350) |
-| Footprint | ~32 KB context, zero-malloc (default static mode) | Lightweight embedded footprint; size depends on TPM stack, target, and build configuration |
-
-Either library can be used standalone; they aren't link-time compatible.
+| Standalone (default) | Standard DSP0274 / DSP0277 requester: certificates, attestation, heartbeat, key update, chunking, application data; ML-DSA / ML-KEM when wolfSSL has them | ~19 KB classical, ~59 KB with ML-DSA |
+| Standalone + TPM side | Adds `--enable-tcg` / `--enable-nuvoton` / `--enable-nations` / `--enable-psk` / `--enable-responder` | ~19 KB classical |
+| Pure TCG (`--disable-mctp`) | TCG binding, vendors, PSK and responder only | ~9.6 KB |
+| wolfTPM (`WOLFTPM_SPDM`, profile `WOLFSPDM_PROFILE_TPM`) | What wolfTPM needs: TCG binding, vendors, PSK, responder | ~9.5 KB |
 
 ## CI / Testing
 
@@ -131,7 +135,9 @@ Runs on every push and PR:
 - **Static Analysis**: cppcheck and Clang Static Analyzer (`scan-build`)
 - **CodeQL Security**: weekly + per-PR analysis
 - **Memory Check**: Valgrind `--leak-check=full` (static and dynamic mem)
-- **SPDM Emulator Integration**: 18-test matrix (6 scenarios x SPDM 1.2 / 1.3 / 1.4) across ubuntu-22.04 x64, ubuntu-24.04 x64, and ubuntu-24.04-arm aarch64
+- **SPDM Emulator Integration**: 21-test matrix (7 scenarios x SPDM 1.2 / 1.3 / 1.4) across ubuntu-22.04 x64, ubuntu-24.04 x64, and ubuntu-24.04-arm aarch64, plus chunking against small-buffer responders
+- **SPDM Emulator PQC**: ML-DSA-44 / 65 / 87, ML-KEM-512 / 768 / 1024 and the fully post-quantum handshake against spdm-emu on OpenSSL
+- **wolfTPM downstream**: wolfTPM master built with this wolfSPDM in its 14 SPDM configurations, its unit tests, and the fwTPM TCG and PSK end-to-end runs; the standard requester must stay compiled out
 - **Skoll review**: wolfSSL deep-review pipeline, pre-merge security and code review
 
 <a href="https://github.com/aidangarske/wolfSPDM/actions">

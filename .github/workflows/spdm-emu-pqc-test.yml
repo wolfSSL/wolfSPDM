@@ -82,6 +82,7 @@ jobs:
       #     the combined build below does not. Cleaned up before the full build. ---
       - name: Build + test wolfSPDM ML-KEM-only (--disable-mldsa --enable-mlkem)
         run: |
+          export LD_LIBRARY_PATH="${{ github.workspace }}/.libs:${{ github.workspace }}/src/.libs:$HOME/wolfssl-install/lib"
           ./autogen.sh
           ./configure --with-wolfssl=$HOME/wolfssl-install \
                       --disable-mldsa --enable-mlkem \
@@ -89,8 +90,6 @@ jobs:
           make -j"$(nproc)"
           make check
           make distclean
-        env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/.libs:${{ github.workspace }}/src/.libs:${{ env.HOME }}/wolfssl-install/lib
 
       # --- wolfSPDM with ML-DSA + ML-KEM asserted on, static or dynamic memory ---
       - name: Build and install wolfSPDM (--enable-mldsa --enable-mlkem)
@@ -103,9 +102,9 @@ jobs:
           make install
 
       - name: Run unit tests (includes ML-DSA verify + ML-KEM decap)
-        run: make check
-        env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/.libs:${{ github.workspace }}/src/.libs:${{ env.HOME }}/wolfssl-install/lib
+        run: |
+          export LD_LIBRARY_PATH="${{ github.workspace }}/.libs:${{ github.workspace }}/src/.libs:$HOME/wolfssl-install/lib"
+          make check
 
       # --- spdm-emu with OpenSSL backend (ML-DSA), cached per OS/arch ---
       # Cache the whole build tree, not just build/bin: the OpenSSL-backed
@@ -285,7 +284,7 @@ jobs:
       #     message; ML-DSA-87 (sig 4627 B) + ciphertext c (1088 B) exceeds the
       #     DataTransferSize, so this case also exercises CHUNK_GET reassembly -
       #     ML-KEM + ML-DSA + chunking in a single handshake.
-      - name: Full PQ (ML-KEM-768 + ML-DSA 65/87) session + measurements + challenge
+      - name: Full PQ (ML-KEM-768 + ML-DSA 65/87) session, attestation, key update, app data
         run: |
           export LD_LIBRARY_PATH=$HOME/wolfspdm-install/lib:$HOME/wolfssl-install/lib
           export SPDM_EMU_PATH=$HOME/spdm-emu/build/bin
@@ -344,6 +343,9 @@ jobs:
             run_pq "$pqc" "$dir" session   --emu
             run_pq "$pqc" "$dir" meas      --meas
             run_pq "$pqc" "$dir" challenge --challenge
+            run_pq "$pqc" "$dir" heartbeat --heartbeat
+            run_pq "$pqc" "$dir" keyupdate --key-update
+            run_pq "$pqc" "$dir" appdata   --app-data
           done
 
           if [ -n "$FAILURES" ]; then

@@ -1,6 +1,6 @@
 /* spdm_chunk.c
  *
- * Copyright (C) 2006-2025 wolfSSL Inc.
+ * Copyright (C) 2006-2026 wolfSSL Inc.
  *
  * This file is part of wolfSPDM.
  *
@@ -19,191 +19,320 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
+#ifdef HAVE_CONFIG_H
+    #include <config.h>
+#endif
+
 #include "spdm_internal.h"
 
-#ifdef WOLFSPDM_HAVE_CHUNK
+#ifndef WOLFSPDM_NO_CHUNK
 
-/* DSP0274 Sec. 10.27.2: CHUNK_GET request.
- *   header: Param1 = Reserved, Param2 = Handle
- *   ChunkSeqNo: u16 for SPDM < 1.4, u32 for >= 1.4 */
-int wolfSPDM_BuildChunkGet(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz,
-    byte handle, word32 seqNo)
+/* CHUNK_SEND and CHUNK_RESPONSE: header(4), ChunkSeqNo (u16 + reserved before
+ * 1.4, u32 from 1.4), ChunkSize(4); the first chunk adds LargeMessageSize(4) */
+#define SPDM_CHUNK_HDR_SZ       12
+#define SPDM_CHUNK_FIRST_HDR_SZ (SPDM_CHUNK_HDR_SZ + 4)
+
+static word32 wolfSPDM_ChunkSeqSz(const WOLFSPDM_CTX* ctx)
 {
-    word32 need = (ctx != NULL && ctx->spdmVersion >= SPDM_VERSION_14) ? 8 : 6;
+    return (ctx->spdmVersion >= SPDM_VERSION_14) ? 4 : 2;
+}
 
-    SPDM_CHECK_BUILD_ARGS(ctx, buf, bufSz, need);
-
-    buf[0] = ctx->spdmVersion;
-    buf[1] = SPDM_CHUNK_GET;
-    buf[2] = 0x00;          /* Param1 reserved */
-    buf[3] = handle;        /* Param2 = Handle */
+static void wolfSPDM_ChunkSetSeq(const WOLFSPDM_CTX* ctx, byte* p, word32 seq)
+{
     if (ctx->spdmVersion >= SPDM_VERSION_14) {
-        SPDM_Set32LE(&buf[4], seqNo);
+        SPDM_Set32LE(p, seq);
     }
     else {
-        SPDM_Set16LE(&buf[4], (word16)seqNo);
+        SPDM_Set16LE(p, (word16)seq);
     }
-    *bufSz = need;
-    return WOLFSPDM_SUCCESS;
 }
 
-/* Cleartext transport for one CHUNK_GET -> CHUNK_RESPONSE into ctx->chunkBuf.
- * Uses the bare callback so the SendReceive chunk hook does not re-enter. */
-static int wolfSPDM_ChunkXferCleartext(WOLFSPDM_CTX* ctx,
-    const byte* tx, word32 txSz, word32* rxSz)
+static word32 wolfSPDM_ChunkGetSeq(const WOLFSPDM_CTX* ctx, const byte* p)
 {
-    *rxSz = (word32)sizeof(ctx->chunkBuf);
-    return wolfSPDM_SendReceiveRaw(ctx, tx, txSz, ctx->chunkBuf, rxSz);
+    if (ctx->spdmVersion >= SPDM_VERSION_14) {
+        return SPDM_Get32LE(p);
+    }
+    return SPDM_Get16LE(p);
 }
 
-#ifndef WOLFSPDM_CHUNK_NO_SECURED
-/* Secured (in-session) transport: encrypt CHUNK_GET, send, decrypt the
- * CHUNK_RESPONSE into ctx->chunkBuf. The on-stack encrypted buffers scale with
- * the MTU knob WOLFSPDM_CHUNK_BUF_SIZE. */
-static int wolfSPDM_ChunkXferSecured(WOLFSPDM_CTX* ctx,
-    const byte* tx, word32 txSz, word32* rxSz)
+/* ChunkSeqNo is 16 bits before 1.4 and shall not wrap */
+static int wolfSPDM_ChunkSeqOk(const WOLFSPDM_CTX* ctx, word32 seq)
 {
-    byte enc[64];                                /* CHUNK_GET is <= 8 B + AEAD */
-    byte encRx[WOLFSPDM_CHUNK_BUF_SIZE + 64];    /* encrypted CHUNK_RESPONSE */
-    word32 encSz = sizeof(enc);
-    word32 encRxSz = sizeof(encRx);
-    int rc = wolfSPDM_EncryptInternal(ctx, tx, txSz, enc, &encSz);
-
-    if (rc == WOLFSPDM_SUCCESS) {
-        rc = wolfSPDM_SendReceiveRaw(ctx, enc, encSz, encRx, &encRxSz);
-    }
-    if (rc == WOLFSPDM_SUCCESS) {
-        *rxSz = (word32)sizeof(ctx->chunkBuf);
-        rc = wolfSPDM_DecryptInternal(ctx, encRx, encRxSz, ctx->chunkBuf, rxSz);
-    }
-    return rc;
+    return ctx->spdmVersion >= SPDM_VERSION_14 || seq <= 0xFFFF;
 }
-#endif /* !WOLFSPDM_CHUNK_NO_SECURED */
 
-/* Reassemble a large response the responder split (DSP0274 Sec. 10.27.2).
- * The triggering ERROR(LargeResponse) carried the Handle; this drives the
- * CHUNK_GET loop, copying each chunk into the caller's outBuf until LastChunk.
- *
- * CHUNK_RESPONSE layout (data offsets are version-independent):
- *   [0..3]  header (Param1 = attributes, Param2 = Handle)
- *   [4..7]  ChunkSeqNo (u32 for 1.4; u16 + u16 reserved for < 1.4)
- *   [8..11] ChunkSize (u32)
- *   [12..15] LargeMessageSize (u32, only when ChunkSeqNo == 0)
- *   [12 or 16 ..] chunk bytes */
-int wolfSPDM_ReassembleLargeResponse(WOLFSPDM_CTX* ctx, int secured,
-    byte handle, byte* outBuf, word32 outBufSz, word32* outSz)
+/* A response that is an SPDM ERROR; records its code */
+static int wolfSPDM_ChunkPeerError(WOLFSPDM_CTX* ctx, const byte* msg,
+    word32 msgSz)
 {
-    byte txBuf[8];
-    word32 txSz;
-    word32 rxSz = 0;
+    if (msgSz >= 4 && msg[1] == SPDM_ERROR) {
+        ctx->lastPeerErrorCode = msg[2];
+        wolfSPDM_DebugPrint(ctx, "CHUNK: SPDM error 0x%02x\n", msg[2]);
+        return 1;
+    }
+    return 0;
+}
+
+static int wolfSPDM_ChunkXfer(WOLFSPDM_CTX* ctx, int secured,
+    const byte* req, word32 reqSz, byte* rsp, word32* rspSz)
+{
+    if (secured) {
+        return wolfSPDM_SecuredXfer(ctx, req, reqSz, rsp, rspSz);
+    }
+    return wolfSPDM_SendReceive(ctx, req, reqSz, rsp, rspSz);
+}
+
+static void wolfSPDM_ChunkCopyOut(const byte* src, word32 srcSz, byte* rsp,
+    word32 cap, word32* rspSz, int* rc)
+{
+    if (srcSz > cap) {
+        *rc = WOLFSPDM_E_BUFFER_SMALL;
+    }
+    else {
+        XMEMCPY(rsp, src, srcSz);
+        *rspSz = srcSz;
+    }
+}
+
+/* Send a request the responder cannot take in one message; the last
+ * CHUNK_SEND_ACK carries the response, or an ERROR(LargeResponse) stands in
+ * for it when the two would not fit together */
+static int wolfSPDM_ChunkSend(WOLFSPDM_CTX* ctx, int secured, word32 limit,
+    const byte* req, word32 reqSz, byte* rsp, word32* rspSz)
+{
+    byte msg[WOLFSPDM_DATA_TRANSFER_SIZE];
+    byte ack[WOLFSPDM_DATA_TRANSFER_SIZE];
+    word32 ackHdr = 4 + wolfSPDM_ChunkSeqSz(ctx);
+    word32 cap = *rspSz;
+    word32 sent = 0;
     word32 seq = 0;
-    word32 off = 0;
-    word32 total = 0;
-    word32 chunkSize;
-    word32 dataOff;
-    word32 seqEcho;
-    word32 minSz;
-    byte attrs;
-    int last = 0;
-    int rc;
+    word32 ackSz;
+    byte handle = ctx->chunkHandle++;
+    int done = 0;
+    int rc = WOLFSPDM_SUCCESS;
 
-    if (ctx == NULL || outBuf == NULL || outSz == NULL) {
-        return WOLFSPDM_E_INVALID_ARG;
-    }
-    /* The < 1.4 CHUNK_GET is 6 bytes; zero the buffer so the trailing two bytes
-     * are deterministic rather than stale stack. */
-    XMEMSET(txBuf, 0, sizeof(txBuf));
+    while (rc == WOLFSPDM_SUCCESS && !done) {
+        word32 hdr = SPDM_CHUNK_HDR_SZ;
+        word32 take;
 
-    while (!last) {
-        if (seq >= WOLFSPDM_CHUNK_MAX_CHUNKS) {
-            wolfSPDM_DebugPrint(ctx, "CHUNK: exceeded max chunks (%u)\n",
-                (unsigned)WOLFSPDM_CHUNK_MAX_CHUNKS);
-            return WOLFSPDM_E_CHUNK;
+        if (!wolfSPDM_ChunkSeqOk(ctx, seq)) {
+            rc = WOLFSPDM_E_CHUNK;
+            break;
+        }
+        XMEMSET(msg, 0, SPDM_CHUNK_FIRST_HDR_SZ);
+        msg[0] = ctx->spdmVersion;
+        msg[1] = SPDM_CHUNK_SEND;
+        msg[3] = handle;
+        wolfSPDM_ChunkSetSeq(ctx, &msg[4], seq);
+        if (seq == 0) {
+            SPDM_Set32LE(&msg[hdr], reqSz);
+            hdr += 4;
+        }
+        take = limit - hdr;
+        if (take > reqSz - sent) {
+            take = reqSz - sent;
+        }
+        SPDM_Set32LE(&msg[8], take);
+        XMEMCPY(&msg[hdr], req + sent, take);
+        sent += take;
+        if (sent == reqSz) {
+            msg[2] = SPDM_CHUNK_LAST_CHUNK;
         }
 
-        txSz = sizeof(txBuf);
-        rc = wolfSPDM_BuildChunkGet(ctx, txBuf, &txSz, handle, seq);
+        ackSz = sizeof(ack);
+        rc = wolfSPDM_ChunkXfer(ctx, secured, msg, hdr + take, ack, &ackSz);
         if (rc != WOLFSPDM_SUCCESS) {
-            return rc;
+            break;
         }
 
-        if (secured) {
-#ifndef WOLFSPDM_CHUNK_NO_SECURED
-            rc = wolfSPDM_ChunkXferSecured(ctx, txBuf, txSz, &rxSz);
-#else
-            return WOLFSPDM_E_CHUNK;  /* secured chunking compiled out */
-#endif
+        if (ackSz >= 5 && ack[0] == ctx->spdmVersion &&
+                ack[1] == SPDM_ERROR &&
+                ack[2] == SPDM_ERROR_LARGE_RESPONSE && sent == reqSz) {
+            /* Handed back for the CHUNK_GET that follows */
+            wolfSPDM_ChunkCopyOut(ack, ackSz, rsp, cap, rspSz, &rc);
+            done = 1;
+        }
+        else if (wolfSPDM_ChunkPeerError(ctx, ack, ackSz)) {
+            rc = WOLFSPDM_E_PEER_ERROR;
+        }
+        else if (ackSz < ackHdr || ack[0] != ctx->spdmVersion ||
+                ack[1] != SPDM_CHUNK_SEND_ACK || ack[3] != handle ||
+                wolfSPDM_ChunkGetSeq(ctx, &ack[4]) != seq) {
+            rc = WOLFSPDM_E_CHUNK;
+        }
+        else if (ack[2] & SPDM_CHUNK_EARLY_ERROR) {
+            /* The responder rejected the request before the last chunk */
+            if (!wolfSPDM_ChunkPeerError(ctx, ack + ackHdr, ackSz - ackHdr)) {
+                rc = WOLFSPDM_E_CHUNK;
+            }
+            else {
+                rc = WOLFSPDM_E_PEER_ERROR;
+            }
+        }
+        else if (sent < reqSz) {
+            /* Only the last acknowledgement carries a response */
+            if (ackSz != ackHdr) {
+                rc = WOLFSPDM_E_CHUNK;
+            }
+            seq++;
         }
         else {
-            rc = wolfSPDM_ChunkXferCleartext(ctx, txBuf, txSz, &rxSz);
+            wolfSPDM_ChunkCopyOut(ack + ackHdr, ackSz - ackHdr, rsp, cap,
+                rspSz, &rc);
+            done = 1;
         }
+    }
+    if (rc == WOLFSPDM_SUCCESS) {
+        wolfSPDM_DebugPrint(ctx, "CHUNK: sent %u bytes in %u chunks\n", reqSz,
+            seq + 1);
+    }
+
+    wc_ForceZero(msg, sizeof(msg));
+    wc_ForceZero(ack, sizeof(ack));
+    return rc;
+}
+
+/* Reassemble a response the responder split after ERROR(LargeResponse) */
+static int wolfSPDM_ChunkGet(WOLFSPDM_CTX* ctx, int secured, byte handle,
+    byte* rsp, word32 cap, word32* rspSz)
+{
+    byte req[8];
+    byte msg[WOLFSPDM_DATA_TRANSFER_SIZE];
+    word32 reqSz = 4 + wolfSPDM_ChunkSeqSz(ctx);
+    word32 msgSz;
+    word32 total = 0;
+    word32 off = 0;
+    word32 seq = 0;
+    int last = 0;
+    int rc = WOLFSPDM_SUCCESS;
+
+    /* No larger than the MaxSPDMmsgSize we advertised */
+    if (cap > WOLFSPDM_MAX_MSG_SIZE) {
+        cap = WOLFSPDM_MAX_MSG_SIZE;
+    }
+    req[0] = ctx->spdmVersion;
+    req[1] = SPDM_CHUNK_GET;
+    req[2] = 0x00;
+    req[3] = handle;
+
+    while (rc == WOLFSPDM_SUCCESS && !last) {
+        word32 hdr = (seq == 0) ? SPDM_CHUNK_FIRST_HDR_SZ : SPDM_CHUNK_HDR_SZ;
+        word32 size;
+
+        if (!wolfSPDM_ChunkSeqOk(ctx, seq)) {
+            rc = WOLFSPDM_E_CHUNK;
+            break;
+        }
+        wolfSPDM_ChunkSetSeq(ctx, &req[4], seq);
+        msgSz = sizeof(msg);
+        rc = wolfSPDM_ChunkXfer(ctx, secured, req, reqSz, msg, &msgSz);
         if (rc != WOLFSPDM_SUCCESS) {
-            return rc;
+            break;
+        }
+        if (wolfSPDM_ChunkPeerError(ctx, msg, msgSz)) {
+            rc = WOLFSPDM_E_PEER_ERROR;
+            break;
         }
 
-        /* A mid-stream ERROR (e.g. the responder aborting the transfer) is a
-         * valid 4-byte response; surface its code before the CHUNK_RESPONSE
-         * length checks. */
-        if (rxSz >= 4 && ctx->chunkBuf[1] == SPDM_ERROR) {
-            ctx->lastPeerErrorCode = ctx->chunkBuf[2];
-            wolfSPDM_DebugPrint(ctx, "CHUNK: responder ERROR 0x%02x\n",
-                ctx->chunkBuf[2]);
-            return WOLFSPDM_E_PEER_ERROR;
+        if (msgSz < hdr || msg[0] != ctx->spdmVersion ||
+                msg[1] != SPDM_CHUNK_RESPONSE || msg[3] != handle ||
+                wolfSPDM_ChunkGetSeq(ctx, &msg[4]) != seq) {
+            rc = WOLFSPDM_E_CHUNK;
+            break;
         }
-        /* Minimum CHUNK_RESPONSE: header(4)+seq(4)+size(4); the first chunk
-         * (seq 0) also carries LargeMessageSize, so require 4 more before
-         * reading it. */
-        minSz = (seq == 0) ? 16u : 12u;
-        if (rxSz < minSz) {
-            return WOLFSPDM_E_CHUNK;
-        }
-        if (ctx->chunkBuf[1] != SPDM_CHUNK_RESPONSE ||
-            ctx->chunkBuf[3] != handle) {
-            return WOLFSPDM_E_CHUNK;
-        }
-        attrs = ctx->chunkBuf[2];
-        seqEcho = (ctx->spdmVersion >= SPDM_VERSION_14)
-            ? SPDM_Get32LE(&ctx->chunkBuf[4])
-            : (word32)SPDM_Get16LE(&ctx->chunkBuf[4]);
-        if (seqEcho != seq) {
-            return WOLFSPDM_E_CHUNK;
-        }
-
-        chunkSize = SPDM_Get32LE(&ctx->chunkBuf[8]);
-        dataOff = 12;
         if (seq == 0) {
-            total = SPDM_Get32LE(&ctx->chunkBuf[12]);
-            dataOff = 16;
-            if (total == 0 || total > outBufSz) {
-                wolfSPDM_DebugPrint(ctx,
-                    "CHUNK: LargeMessageSize %u exceeds buffer %u\n",
-                    (unsigned)total, (unsigned)outBufSz);
-                return WOLFSPDM_E_BUFFER_SMALL;
+            total = SPDM_Get32LE(&msg[SPDM_CHUNK_HDR_SZ]);
+            if (total == 0) {
+                rc = WOLFSPDM_E_CHUNK;
+                break;
+            }
+            if (total > cap) {
+                rc = WOLFSPDM_E_BUFFER_SMALL;
+                break;
             }
         }
 
-        /* chunkSize is fully responder-controlled. Validate with subtraction so
-         * an oversized value cannot wrap an addition: dataOff <= rxSz (minSz)
-         * and off <= total hold by construction, so the differences are safe. */
-        if (chunkSize == 0 ||
-            chunkSize > rxSz - dataOff ||
-            chunkSize > total - off) {
-            return WOLFSPDM_E_CHUNK;
+        /* Each CHUNK_RESPONSE is exactly its header and a non-empty chunk,
+         * and the one flagged last completes the message */
+        size = SPDM_Get32LE(&msg[8]);
+        last = (msg[2] & SPDM_CHUNK_LAST_CHUNK) != 0;
+        if (size == 0 || size != msgSz - hdr || size > total - off) {
+            rc = WOLFSPDM_E_CHUNK;
+            break;
         }
-        XMEMCPY(outBuf + off, &ctx->chunkBuf[dataOff], chunkSize);
-        off += chunkSize;
-
-        last = (attrs & SPDM_CHUNK_LAST_CHUNK) != 0;
+        XMEMCPY(rsp + off, &msg[hdr], size);
+        off += size;
+        if (last != (off == total)) {
+            rc = WOLFSPDM_E_CHUNK;
+            break;
+        }
         seq++;
     }
 
-    if (off != total) {
-        return WOLFSPDM_E_CHUNK;
+    if (rc == WOLFSPDM_SUCCESS) {
+        *rspSz = total;
+        wolfSPDM_DebugPrint(ctx, "CHUNK: reassembled %u bytes in %u chunks\n",
+            total, seq);
     }
-    *outSz = total;
-    wolfSPDM_DebugPrint(ctx, "CHUNK: reassembled %u bytes in %u chunk(s)\n",
-        (unsigned)total, (unsigned)seq);
-    return WOLFSPDM_SUCCESS;
+    wc_ForceZero(msg, sizeof(msg));
+    return rc;
 }
 
-#endif /* WOLFSPDM_HAVE_CHUNK */
+int wolfSPDM_ChunkExchange(WOLFSPDM_CTX* ctx, int secured,
+    const byte* req, word32 reqSz, byte* rsp, word32* rspSz)
+{
+    word32 limit;
+    word32 cap;
+    int rc;
+
+    if (ctx == NULL || req == NULL || rsp == NULL || rspSz == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    cap = *rspSz;
+
+    /* Each message fits both the responder's DataTransferSize and ours */
+    limit = ctx->dataTransferSize;
+    if (limit == 0 || limit > WOLFSPDM_DATA_TRANSFER_SIZE) {
+        limit = WOLFSPDM_DATA_TRANSFER_SIZE;
+    }
+
+    if (reqSz <= limit) {
+        rc = wolfSPDM_ChunkXfer(ctx, secured, req, reqSz, rsp, rspSz);
+    }
+    else if (ctx->maxSpdmMsgSize != 0 && reqSz > ctx->maxSpdmMsgSize) {
+        rc = WOLFSPDM_E_BUFFER_SMALL;
+    }
+    else {
+        rc = wolfSPDM_ChunkSend(ctx, secured, limit, req, reqSz, rsp, rspSz);
+    }
+
+    /* ERROR(LargeResponse): ExtendedErrorData is the chunk Handle */
+    if (rc == WOLFSPDM_SUCCESS && *rspSz >= 5 &&
+            rsp[0] == ctx->spdmVersion && rsp[1] == SPDM_ERROR &&
+            rsp[2] == SPDM_ERROR_LARGE_RESPONSE) {
+        rc = wolfSPDM_ChunkGet(ctx, secured, rsp[4], rsp, cap, rspSz);
+    }
+    return rc;
+}
+
+#endif /* !WOLFSPDM_NO_CHUNK */
+
+#ifndef WOLFSPDM_NO_CERT
+/* Unchunked, a request must fit the responder's DataTransferSize */
+int wolfSPDM_ClearExchange(WOLFSPDM_CTX* ctx, const byte* req, word32 reqSz,
+    byte* rsp, word32* rspSz)
+{
+#ifndef WOLFSPDM_NO_CHUNK
+    if (ctx != NULL && wolfSPDM_ChunkOn(ctx)) {
+        return wolfSPDM_ChunkExchange(ctx, 0, req, reqSz, rsp, rspSz);
+    }
+#endif
+    if (ctx != NULL && !wolfSPDM_IsTcgMode(ctx) &&
+            ctx->dataTransferSize != 0 && reqSz > ctx->dataTransferSize) {
+        wolfSPDM_DebugPrint(ctx, "Request of %u bytes exceeds the responder "
+            "DataTransferSize %u\n", reqSz, ctx->dataTransferSize);
+        return WOLFSPDM_E_BUFFER_SMALL;
+    }
+    return wolfSPDM_SendReceive(ctx, req, reqSz, rsp, rspSz);
+}
+#endif /* !WOLFSPDM_NO_CERT */

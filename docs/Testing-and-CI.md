@@ -16,15 +16,16 @@ export SPDM_EMU_PATH=../spdm-emu/build/bin
 ./examples/spdm_test.sh
 ```
 
-`spdm_test.sh` runs 18 scenarios:
+`spdm_test.sh` runs 21 tests, seven scenarios across SPDM 1.2, 1.3 and 1.4:
 - Session
 - Signed measurements
 - Unsigned measurements
 - Challenge
 - Heartbeat
 - Key update
+- Application data (PLDM GetTID as an MCTP application message)
 
-Across SPDM versions 1.2, 1.3, and 1.4.
+`SPDM_EMU_ARGS` passes extra responder options, e.g. `--cap ...,CHUNK`.
 
 ## CI workflow coverage
 
@@ -38,25 +39,28 @@ Documented workflows include:
 - Empty Brace Scope Scan
 - CodeQL Security
 - Codespell
-- SPDM Emulator Test (integration matrix on x64 + aarch64)
+- SPDM Emulator Test (integration matrix on x64 + aarch64, plus chunking
+  against small-buffer responders at DataTransferSize 42 and 64)
+- wolfTPM downstream: wolfTPM master built with this wolfSPDM in its 14 SPDM
+  configurations, its SPDM unit tests, and the fwTPM TCG and PSK end-to-end
+  runs; the standard requester symbols must stay out of `libwolftpm`
 - SPDM Emulator PQC Test — wolfSSL master + spdm-emu (OpenSSL backend) on the
   full x64 + aarch64 matrix. Builds wolfSPDM ML-KEM-only as well as the combined
   config, then runs over the wire: ML-DSA-44/65/87 (signatures), ML-KEM-512/768/1024
   (key exchange), and a **fully post-quantum** leg (ML-KEM-768 + ML-DSA-65/87) for
-  session, measurements, and challenge.
+  session, measurements, challenge, heartbeat, key update and application data.
 
 See `.github/workflows/README.md` for workflow inventory details.
 
 ## ML-DSA (post-quantum signatures) test coverage
 
 - **Unit (`make check`, ML-DSA build):** PqcAsymAlgo/PqcAsymSel wire offsets and
-  the Base/Pqc mutual-exclusion; a real wolfSSL ML-DSA sign + verify round-trip
-  through `wolfSPDM_VerifyMeasurementSig` for ML-DSA-44/65/87 (with a tamper
-  negative); and KEY_EXCHANGE_RSP / CHALLENGE_AUTH signature-size guards.
-- **Real-certificate validation:** `wolfSPDM_ExtractResponderPubKey` was
-  validated against the actual spdm-emu ML-DSA cert chains for all three levels
-  (44 -> WC_ML_DSA_44, 65 -> 65, 87 -> 87), plus a negative case where a
-  level-65 cert is rejected when ML-DSA-87 was negotiated (level pinning).
+  the Base/Pqc mutual exclusion; a real wolfSSL ML-DSA sign + verify round trip
+  through `wolfSPDM_VerifyRspSig` for ML-DSA-44/65/87 with tamper, wrong-context
+  and wrong-size negatives; and the KEY_EXCHANGE_RSP signature-size guard.
+- **Certificate chains:** `wolfSPDM_ValidateCertChain` verifies every link of
+  the libspdm ML-DSA-44 sample chain against its root, rejects a forged leaf
+  signature, and rejects a leaf whose set differs from the negotiated one.
 - **Over-the-wire (CI):** ML-DSA-44/65/87 all complete against spdm-emu;
   ML-DSA-87 responses exceed the 4608 B DataTransferSize and are reassembled via
   the SPDM 1.2 chunking engine (see [[Message Chunking]]).
@@ -67,8 +71,8 @@ See `.github/workflows/README.md` for workflow inventory details.
   DHE-xor-KEM mutual-exclusion, a real wolfSSL ML-KEM encapsulate/decapsulate
   round-trip asserting `K′ == K`, the KEY_EXCHANGE `ek` placement, the
   KEY_EXCHANGE_RSP ciphertext-offset math, the reconnect key-type-switch (no
-  type-confused free), the KEM-only-below-1.4 refusal, and the oversized-request
-  fail-fast guard.
+  type-confused free), the KEM-only-below-1.4 refusal, and the refusal of an
+  unchunked request above the responder's DataTransferSize.
 - **Over-the-wire (CI):** ML-KEM-512/768/1024 against spdm-emu (`--dhe NONE
   --kem ML_KEM_*`), and a **fully post-quantum** leg pairing ML-KEM-768 with
   ML-DSA-65/87 — the ML-DSA-87 case also exercises chunking, so ML-KEM + ML-DSA +

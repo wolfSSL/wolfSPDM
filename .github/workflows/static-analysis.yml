@@ -48,6 +48,7 @@ jobs:
                  --error-exitcode=1 \
                  --suppress=missingIncludeSystem \
                  --suppress=constParameterPointer \
+                 --suppress=constParameterCallback \
                  --suppress=knownConditionTrueFalse \
                  --inline-suppr \
                  -I wolfspdm -I src -I $HOME/wolfssl-install/include \
@@ -88,7 +89,7 @@ jobs:
     - name: Configure
       run: |
         ./autogen.sh
-        ./configure --with-wolfssl=$HOME/wolfssl-install
+        ./configure --with-wolfssl=$HOME/wolfssl-install --enable-nuvoton --enable-nations --enable-responder
 
     - name: Run scan-build
       run: scan-build --status-bugs -o scan-results make -j$(nproc)

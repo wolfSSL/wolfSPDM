@@ -71,14 +71,50 @@
 /* Enable dynamic memory allocation */
 #undef WOLFSPDM_DYNAMIC_MEMORY
 
-/* Disable SPDM message chunking */
+/* Enable Nations SPDM vendor commands */
+#undef WOLFSPDM_NATIONS
+
+/* Disable the application data API */
+#undef WOLFSPDM_NO_APP_DATA
+
+/* Disable the standard certificate requester */
+#undef WOLFSPDM_NO_CERT
+
+/* Disable CHALLENGE */
+#undef WOLFSPDM_NO_CHALLENGE
+
+/* Disable large message chunking */
 #undef WOLFSPDM_NO_CHUNK
 
-/* Disable ML-DSA support */
+/* Disable HEARTBEAT */
+#undef WOLFSPDM_NO_HEARTBEAT
+
+/* Disable KEY_UPDATE */
+#undef WOLFSPDM_NO_KEY_UPDATE
+
+/* Drop MCTP secured messages */
+#undef WOLFSPDM_NO_MCTP
+
+/* Disable GET_MEASUREMENTS */
+#undef WOLFSPDM_NO_MEAS
+
+/* Disable ML-DSA signatures */
 #undef WOLFSPDM_NO_MLDSA
 
-/* Disable ML-KEM support */
+/* Disable ML-KEM key exchange */
 #undef WOLFSPDM_NO_MLKEM
+
+/* Enable Nuvoton SPDM vendor commands */
+#undef WOLFSPDM_NUVOTON
+
+/* Enable SPDM PSK mode */
+#undef WOLFSPDM_PSK
+
+/* Enable the SPDM responder */
+#undef WOLFSPDM_RESPONDER
+
+/* Enable the TCG SPDM binding */
+#undef WOLFSPDM_TCG
 
 /* Define for Solaris 2.5.1 so the uint32_t typedef from <sys/synch.h>,
    <pthread.h>, or <semaphore.h> is not used. If the typedef were allowed, the

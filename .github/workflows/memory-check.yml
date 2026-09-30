@@ -48,7 +48,7 @@ jobs:
     - name: Build with debug
       run: |
         ./autogen.sh
-        ./configure --with-wolfssl=$HOME/wolfssl-install --enable-debug \
+        ./configure --with-wolfssl=$HOME/wolfssl-install --enable-nuvoton --enable-nations --enable-responder --enable-debug \
                     ${{ matrix.dynamic-mem == 'yes' && '--enable-dynamic-mem' || '' }}
         make -j$(nproc)
         make -j$(nproc) check TESTS=

@@ -52,22 +52,63 @@ Add `--disable-mctp` for a TPM-only build that drops the standard DMTF requester
 
 ## Prerequisites (wolfSSL)
 
-wolfSPDM requires [wolfSSL](https://www.wolfssl.com/) configured with ECC P-384, SHA-384, AES-GCM, and HKDF:
+wolfSPDM links against [wolfSSL](https://www.wolfssl.com/). wolfSSL is bundled as
+the `lib/wolfssl` submodule at a known-good commit, so clone wolfSPDM with
+`--recursive` (or run `git submodule update --init lib/wolfssl`) and build it
+from there. **`--enable-wolftpm` is required** on the wolfSSL build (it turns on
+the wolfCrypt features wolfSPDM relies on); the remaining flags select the SPDM
+algorithm set.
+
+**Supported wolfSSL versions:**
+
+- Classical SPDM (Algorithm Set B): wolfSSL **>= v5.8.0-stable** (hard minimum, enforced by `configure`).
+- ML-KEM key exchange: works on the classical floor, wolfSSL **>= v5.8.0-stable** (detected by the `wc_MlKemKey` API probe).
+- ML-DSA authentication: wolfSSL **>= v5.9.2-stable** (the `wc_MlDsaKey` context API lands there). Requesting ML-DSA against older wolfSSL fails `configure`; in auto mode ML-DSA is disabled with a warning.
+
+### Default build (Algorithm Set B: ECC P-384, SHA-384, AES-256-GCM, HKDF)
 
 ```bash
-git clone https://github.com/wolfSSL/wolfssl.git
-cd wolfssl
+cd lib/wolfssl
 ./autogen.sh
 ./configure --enable-wolftpm --enable-ecc --enable-sha384 \
             --enable-aesgcm --enable-hkdf --enable-sp
 make
 sudo make install
 sudo ldconfig
+cd ../..
 ```
 
-`--enable-sp` enables Single Precision math with optimized ECC P-384, required for SPDM Algorithm Set B on ARM64 and other constrained targets. `--enable-all` works as a superset.
+`--enable-sp` enables Single Precision math with optimized ECC P-384, required
+for Algorithm Set B on ARM64 and other constrained targets. `--enable-all` works
+as a superset.
 
-For post-quantum support, build wolfSSL with `--enable-mldsa` (FIPS 204) and/or `--enable-mlkem` (FIPS 203). Use wolfSSL master or a release carrying the `wc_MlDsaKey` and `wc_MlKemKey` APIs. wolfSPDM auto-enables each when the linked wolfSSL provides it (`--disable-mldsa` / `--disable-mlkem` force them off); enabling both gives a fully post-quantum handshake (ML-KEM key exchange + ML-DSA authentication).
+### Post-quantum build (ML-KEM key exchange + ML-DSA authentication)
+
+Needs wolfSSL **>= v5.9.2-stable** for ML-DSA (ML-KEM alone works on v5.8.0).
+Post-quantum extends Algorithm Set B rather
+than replacing it: ML-KEM and ML-DSA take over key exchange and authentication,
+while the secured session still uses SHA-384, AES-256-GCM, and HKDF. Keep the
+Set B flags and add `--enable-mldsa` (FIPS 204) and `--enable-mlkem` (FIPS 203):
+
+```bash
+cd lib/wolfssl
+./autogen.sh
+./configure --enable-wolftpm --enable-ecc --enable-sha384 \
+            --enable-aesgcm --enable-hkdf --enable-sp \
+            --enable-mldsa --enable-mlkem
+make
+sudo make install
+sudo ldconfig
+cd ../..
+```
+
+wolfSPDM auto-enables each when the linked wolfSSL provides it (`--disable-mldsa`
+/ `--disable-mlkem` force them off).
+
+The pinned wolfSSL submodule can be updated like any checkout: `cd lib/wolfssl`,
+check out or rebuild whatever you need (at or above the floors above), then
+reinstall. `git submodule update` restores the pin. To build against your own
+installed wolfSSL instead, pass `--with-wolfssl=PATH` to wolfSPDM.
 
 ## Build
 

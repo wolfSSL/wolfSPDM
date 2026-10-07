@@ -133,6 +133,27 @@ AC_ARG_ENABLE([mlkem],
     [enable_mlkem=$enableval],
     [enable_mlkem=auto])
 
+# ML-DSA's wc_MlDsaKey context API was introduced in wolfSSL v5.9.2-stable.
+# ML-KEM (wc_MlKemKey) is older and is detected by its own probe below, so the
+# version floor applies to ML-DSA only.
+if test "x$enable_mldsa" != "xno"; then
+    AC_MSG_CHECKING([wolfSSL version >= v5.9.2-stable for ML-DSA])
+    AC_COMPILE_IFELSE([AC_LANG_SOURCE([[
+        #include <wolfssl/version.h>
+        #if !defined(LIBWOLFSSL_VERSION_HEX) || LIBWOLFSSL_VERSION_HEX < 0x05009002
+        #error "wolfSSL < v5.9.2"
+        #endif
+        int main(void) { return 0; }
+    ]])],
+    [AC_MSG_RESULT([yes])],
+    [AC_MSG_RESULT([no])
+     if test "x$enable_mldsa" = "xyes"; then
+         AC_MSG_ERROR([ML-DSA requires wolfSSL >= v5.9.2-stable])
+     fi
+     AC_MSG_WARN([wolfSSL < v5.9.2-stable: disabling ML-DSA])
+     enable_mldsa=no])
+fi
+
 have_mldsa_api=no
 if test "x$enable_mldsa" != "xno" && test "x$enable_cert" = "xyes"; then
     AC_MSG_CHECKING([for the wolfSSL wc_MlDsaKey context API])

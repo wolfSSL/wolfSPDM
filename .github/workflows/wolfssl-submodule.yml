@@ -1,0 +1,69 @@
+name: wolfSSL submodule build
+
+# Builds the pinned lib/wolfssl submodule with the documented flags and builds
+# plus tests wolfSPDM against it, so Dependabot pin bumps are gated on CI. The
+# wolfssl-versions.yml matrix still covers latest-stable and master.
+
+on:
+  push:
+    branches: [ 'main', 'release/**' ]
+  pull_request:
+    branches: [ '*' ]
+  repository_dispatch:
+    types: [nightly-trigger]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-build:
+    name: Build against the pinned wolfSSL submodule
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout wolfSPDM with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool
+
+      - name: Build and install the bundled wolfSSL
+        run: |
+          cd lib/wolfssl
+          ./autogen.sh
+          ./configure --enable-wolftpm --enable-ecc --enable-sha384 \
+                      --enable-aesgcm --enable-hkdf --enable-sp \
+                      --prefix=$HOME/wolfssl-install
+          make -j"$(nproc)"
+          make install
+
+      - name: Build wolfSPDM against the submodule
+        run: |
+          ./autogen.sh
+          ./configure --with-wolfssl=$HOME/wolfssl-install \
+                      --enable-nuvoton --enable-nations --enable-responder
+          make -j"$(nproc)"
+
+      - name: Run unit tests
+        run: |
+          export LD_LIBRARY_PATH="$PWD/src/.libs:$HOME/wolfssl-install/lib"
+          make check
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wolfssl-submodule-logs
+          path: |
+            config.log
+            test/*.log
+            test-suite.log
+          retention-days: 5

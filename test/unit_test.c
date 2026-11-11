@@ -2472,6 +2472,14 @@ static int test_sign_verify_roundtrip(void)
     sig[10] ^= 0x01;
     TEST_ASSERT(wolfSPDM_VerifySignature(ctx, hash, 48, sig, sigSz)
         != WOLFSPDM_SUCCESS, "flipped sig should fail");
+    sig[10] ^= 0x01;
+
+    /* An off-curve responder key never verifies */
+    pubKey[95] ^= 0x01;
+    if (wolfSPDM_SetResponderPubKey(ctx, pubKey, 96) == WOLFSPDM_SUCCESS) {
+        TEST_ASSERT(wolfSPDM_VerifySignature(ctx, hash, 48, sig, sigSz)
+            != WOLFSPDM_SUCCESS, "off-curve responder key must fail");
+    }
 
     wc_ForceZero(privKey, sizeof(privKey));
     TEST_CTX_FREE();
@@ -3873,6 +3881,7 @@ static int test_load_sample_chain(WOLFSPDM_CTX* ctx)
 static int test_validate_cert_chain(void)
 {
     byte leafKey[WOLFSPDM_ECC_POINT_SIZE];
+    byte anchor[sizeof(test_ca_cert_der)];
     TEST_CTX_SETUP_V12();
     printf("test_validate_cert_chain...\n");
 
@@ -3889,6 +3898,26 @@ static int test_validate_cert_chain(void)
     ASSERT_EQ(ctx->flags.hasRspPubKey, 1, "leaf key installed");
     ASSERT_EQ(ctx->flags.rspKeyFromCert, 1, "key marked as cert derived");
     XMEMCPY(leafKey, ctx->rspPubKey, sizeof(leafKey));
+
+    /* A root copy that differs from the anchor is still verified */
+    ASSERT_EQ(XMEMCMP(test_rsp_chain_der, test_ca_cert_der,
+        sizeof(test_ca_cert_der)), 0, "sample chain starts with the root");
+    ctx->certChain[WOLFSPDM_CERT_CHAIN_HDR_SZ + sizeof(test_ca_cert_der) - 2]
+        ^= 0x01;
+    ASSERT_EQ(wolfSPDM_ValidateCertChain(ctx), WOLFSPDM_E_CERT_FAIL,
+        "root differing from the anchor must be verified");
+
+    /* The exact configured anchor is trusted without its self-signature */
+    XMEMCPY(anchor, test_ca_cert_der, sizeof(anchor));
+    anchor[sizeof(anchor) - 2] ^= 0x01;
+    ASSERT_SUCCESS(wolfSPDM_SetTrustedCAs(ctx, anchor, sizeof(anchor)));
+    ASSERT_SUCCESS(wolfSPDM_Sha384Hash(ctx->certChain + 4, anchor,
+        sizeof(anchor), NULL, 0, NULL, 0));
+    ASSERT_SUCCESS(wolfSPDM_ValidateCertChain(ctx));
+    ASSERT_SUCCESS(wolfSPDM_SetTrustedCAs(ctx, test_ca_cert_der,
+        sizeof(test_ca_cert_der)));
+    ASSERT_SUCCESS(test_load_sample_chain(ctx));
+    ASSERT_SUCCESS(wolfSPDM_ValidateCertChain(ctx));
 
     /* A forged leaf signature breaks the chain */
     ctx->certChain[ctx->certChainLen - 2] ^= 0x01;
@@ -3924,6 +3953,13 @@ static int test_validate_cert_chain(void)
 
     wolfSPDM_SetIO(ctx, dummy_io_cb, NULL);
     ASSERT_SUCCESS(wolfSPDM_AllowUntrustedCerts(ctx, 0));
+
+    /* Connect validates once, so its KEY_EXCHANGE does not revalidate */
+    TEST_ASSERT(wolfSPDM_KeyExchangeValidated(ctx) != WOLFSPDM_E_CERT_FAIL,
+        "validated key exchange must not recheck the chain");
+    ASSERT_EQ(ctx->flags.hasRspPubKey, 1,
+        "validated key exchange keeps the validated key");
+
     ASSERT_EQ(wolfSPDM_KeyExchange(ctx), WOLFSPDM_E_CERT_FAIL,
         "Certificate-derived key must pass the current trust policy");
     ASSERT_EQ(ctx->flags.hasRspPubKey, 0,
@@ -3942,6 +3978,97 @@ static int test_validate_cert_chain(void)
     ASSERT_EQ(wolfSPDM_KeyExchange(ctx), WOLFSPDM_E_BAD_STATE,
         "Failed retrieval cannot reuse a cached certificate key");
 
+    TEST_CTX_FREE();
+    TEST_PASS();
+}
+/* Serves the sample chain in small CERTIFICATE portions and hashes the
+ * exchanged bytes the way M1 must */
+typedef struct {
+    byte chain[WOLFSPDM_CERT_CHAIN_HDR_SZ + sizeof(test_rsp_chain_der)];
+    word32 chainSz;
+    word32 exchanges;
+    wc_Sha384 m1;
+} TEST_CERT_RSP;
+
+static int cert_portion_io_cb(WOLFSPDM_CTX* ctx, const byte* txBuf,
+    word32 txSz, byte* rxBuf, word32* rxSz, void* userCtx)
+{
+    TEST_CERT_RSP* r = (TEST_CERT_RSP*)userCtx;
+    word32 offset;
+    word32 portion;
+
+    (void)ctx;
+    if (txSz != 8 || txBuf[1] != SPDM_GET_CERTIFICATE) {
+        return -1;
+    }
+    offset = SPDM_Get16LE(&txBuf[4]);
+    portion = SPDM_Get16LE(&txBuf[6]);
+    if (portion > 300) {
+        portion = 300;
+    }
+    if (portion > r->chainSz - offset) {
+        portion = r->chainSz - offset;
+    }
+    if (*rxSz < 8 + portion) {
+        return -1;
+    }
+    rxBuf[0] = txBuf[0];
+    rxBuf[1] = SPDM_CERTIFICATE;
+    rxBuf[2] = txBuf[2];
+    rxBuf[3] = 0;
+    SPDM_Set16LE(&rxBuf[4], (word16)portion);
+    SPDM_Set16LE(&rxBuf[6], (word16)(r->chainSz - offset - portion));
+    XMEMCPY(&rxBuf[8], r->chain + offset, portion);
+    *rxSz = 8 + portion;
+    r->exchanges++;
+    if (wc_Sha384Update(&r->m1, txBuf, txSz) != 0 ||
+            wc_Sha384Update(&r->m1, rxBuf, *rxSz) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int test_get_certificate_portions(void)
+{
+    static TEST_CERT_RSP r;
+#ifndef WOLFSPDM_NO_CHALLENGE
+    byte want[WOLFSPDM_HASH_SIZE];
+    byte got[WOLFSPDM_HASH_SIZE];
+    wc_Sha384 m1;
+#endif
+    TEST_CTX_SETUP_V12();
+    printf("test_get_certificate_portions...\n");
+
+    XMEMSET(&r, 0, sizeof(r));
+    r.chainSz = (word32)sizeof(r.chain);
+    SPDM_Set16LE(r.chain, (word16)r.chainSz);
+    ASSERT_SUCCESS(wolfSPDM_Sha384Hash(r.chain + 4, test_ca_cert_der,
+        sizeof(test_ca_cert_der), NULL, 0, NULL, 0));
+    XMEMCPY(r.chain + WOLFSPDM_CERT_CHAIN_HDR_SZ, test_rsp_chain_der,
+        sizeof(test_rsp_chain_der));
+    ASSERT_EQ(wc_InitSha384(&r.m1), 0, "init expected M1");
+#ifndef WOLFSPDM_NO_CHALLENGE
+    ASSERT_SUCCESS(wolfSPDM_M1Start(ctx));
+#endif
+
+    wolfSPDM_SetIO(ctx, cert_portion_io_cb, &r);
+    ASSERT_SUCCESS(wolfSPDM_GetCertificate(ctx, 0));
+    TEST_ASSERT(r.exchanges > 2, "chain arrives in several portions");
+    ASSERT_EQ(ctx->certChainLen, r.chainSz, "whole chain assembled");
+    ASSERT_EQ(XMEMCMP(ctx->certChain, r.chain, r.chainSz), 0,
+        "assembled chain matches the responder's");
+
+#ifndef WOLFSPDM_NO_CHALLENGE
+    /* M1 holds each GET_CERTIFICATE and its full CERTIFICATE response */
+    ASSERT_EQ(wc_Sha384Final(&r.m1, want), 0, "expected M1");
+    ASSERT_EQ(wc_Sha384Copy(&ctx->m1Hash, &m1), 0, "copy M1");
+    ASSERT_EQ(wc_Sha384Final(&m1, got), 0, "final M1");
+    wc_Sha384Free(&m1);
+    ASSERT_EQ(XMEMCMP(want, got, sizeof(want)), 0,
+        "M1 matches the exchanged bytes");
+#endif
+
+    wc_Sha384Free(&r.m1);
     TEST_CTX_FREE();
     TEST_PASS();
 }
@@ -5866,6 +5993,7 @@ int main(void)
     test_parse_certificate();
     test_mutual_auth_rejected_in_standard_mode();
     test_validate_cert_chain();
+    test_get_certificate_portions();
     test_clear_exchange_dts();
 #endif
 #if defined(WOLFSPDM_HAVE_MLDSA) || defined(WOLFSPDM_HAVE_MLKEM)

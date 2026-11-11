@@ -30,11 +30,9 @@
 #include <wolfssl/wolfcrypt/asn.h>
 
 /* Largest certificate portion requested per GET_CERTIFICATE; the response
- * fits our DataTransferSize so certificates are never chunked */
-#if WOLFSPDM_DATA_TRANSFER_SIZE < 1024 + 8
+ * fills our DataTransferSize so certificates are never chunked */
+#ifndef WOLFSPDM_CERT_PORTION_SZ
     #define WOLFSPDM_CERT_PORTION_SZ  (WOLFSPDM_DATA_TRANSFER_SIZE - 8)
-#else
-    #define WOLFSPDM_CERT_PORTION_SZ  1024
 #endif
 
 /* ----- VCA: GET_CAPABILITIES / NEGOTIATE_ALGORITHMS ----- */
@@ -369,7 +367,8 @@ int wolfSPDM_ParseCertificate(WOLFSPDM_CTX* ctx, const byte* buf,
         return WOLFSPDM_E_BUFFER_SMALL;
     }
 
-    XMEMCPY(ctx->certChain + ctx->certChainLen, buf + 8, *portionLen);
+    /* buf may be the response received in place at the end of the chain */
+    XMEMMOVE(ctx->certChain + ctx->certChainLen, buf + 8, *portionLen);
     ctx->certChainLen += *portionLen;
     return WOLFSPDM_SUCCESS;
 }
@@ -377,8 +376,12 @@ int wolfSPDM_ParseCertificate(WOLFSPDM_CTX* ctx, const byte* buf,
 int wolfSPDM_GetCertificate(WOLFSPDM_CTX* ctx, int slotId)
 {
     byte txBuf[8];
-    byte rxBuf[8 + WOLFSPDM_CERT_PORTION_SZ];
+#ifndef WOLFSPDM_NO_CHALLENGE
+    byte rspHdr[8];
+#endif
+    byte* rsp;
     word32 rxSz;
+    word32 room;
     word16 offset = 0;
     word16 portionLen = 0;
     word16 remainderLen = 1;
@@ -405,23 +408,41 @@ int wolfSPDM_GetCertificate(WOLFSPDM_CTX* ctx, int slotId)
     }
 
     while (rc == WOLFSPDM_SUCCESS && remainderLen > 0) {
+        /* Receive in place after the chain so far: no response buffer */
+        rsp = ctx->certChain + ctx->certChainLen;
+        room = (word32)sizeof(ctx->certChain) - ctx->certChainLen - 8;
         txBuf[0] = ctx->spdmVersion;
         txBuf[1] = SPDM_GET_CERTIFICATE;
         txBuf[2] = (byte)slotId;
         txBuf[3] = 0x00;
         SPDM_Set16LE(&txBuf[4], offset);
-        SPDM_Set16LE(&txBuf[6], reqLen);
+        SPDM_Set16LE(&txBuf[6], (room < reqLen) ? (word16)room : reqLen);
+        if (room == 0) {
+            rc = WOLFSPDM_E_BUFFER_SMALL;
+        }
 
-        rxSz = sizeof(rxBuf);
-        rc = wolfSPDM_ClearExchange(ctx, txBuf, sizeof(txBuf), rxBuf, &rxSz);
+        rxSz = room + 8;
         if (rc == WOLFSPDM_SUCCESS) {
-            rc = wolfSPDM_ParseCertificate(ctx, rxBuf, rxSz, &portionLen,
+            rc = wolfSPDM_ClearExchange(ctx, txBuf, sizeof(txBuf), rsp,
+                &rxSz);
+        }
+    #ifndef WOLFSPDM_NO_CHALLENGE
+        if (rc == WOLFSPDM_SUCCESS && rxSz >= sizeof(rspHdr)) {
+            XMEMCPY(rspHdr, rsp, sizeof(rspHdr));
+        }
+    #endif
+        if (rc == WOLFSPDM_SUCCESS) {
+            rc = wolfSPDM_ParseCertificate(ctx, rsp, rxSz, &portionLen,
                 &remainderLen);
         }
     #ifndef WOLFSPDM_NO_CHALLENGE
+        /* Same bytes as the response: header, then the portion now at rsp */
         if (rc == WOLFSPDM_SUCCESS) {
-            rc = wolfSPDM_M1Add(ctx, txBuf, sizeof(txBuf), rxBuf,
-                8u + portionLen);
+            rc = wolfSPDM_M1Add(ctx, txBuf, sizeof(txBuf), rspHdr,
+                sizeof(rspHdr));
+        }
+        if (rc == WOLFSPDM_SUCCESS) {
+            rc = wolfSPDM_M1Add(ctx, rsp, portionLen, rspHdr, 0);
         }
     #endif
         /* Every non-final portion must make progress */
@@ -725,7 +746,12 @@ int wolfSPDM_ValidateCertChain(WOLFSPDM_CTX* ctx)
         if (certSz == 0) {
             rc = WOLFSPDM_E_CERT_PARSE;
         }
-        if (rc == WOLFSPDM_SUCCESS && haveKey) {
+        /* The configured root is the anchor; its own signature adds nothing */
+        if (rc == WOLFSPDM_SUCCESS && haveKey &&
+                !(anchored && pos == WOLFSPDM_CERT_CHAIN_HDR_SZ &&
+                  certSz == ctx->trustedCASz &&
+                  XMEMCMP(ctx->certChain + pos, ctx->trustedCA,
+                      certSz) == 0)) {
             rc = isCA ? wolfSPDM_CertSignedBy(ctx->certChain + pos, certSz,
                 &key) : WOLFSPDM_E_CERT_FAIL;
         }
@@ -853,7 +879,8 @@ int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx)
         wolfSPDM_GetCertificate(ctx, slot));
     SPDM_CONNECT_STEP(ctx, "Validating certificate chain\n",
         wolfSPDM_ValidateCertChain(ctx));
-    SPDM_CONNECT_STEP(ctx, "KEY_EXCHANGE\n", wolfSPDM_KeyExchange(ctx));
+    SPDM_CONNECT_STEP(ctx, "KEY_EXCHANGE\n",
+        wolfSPDM_KeyExchangeValidated(ctx));
     SPDM_CONNECT_STEP(ctx, "FINISH\n", wolfSPDM_Finish(ctx));
 
     ctx->state = WOLFSPDM_STATE_CONNECTED;

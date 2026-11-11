@@ -221,7 +221,7 @@ struct WOLFSPDM_CTX {
     word16 kexAdvKem;           /* ML-KEM sets offered at SPDM 1.4 */
     byte   kexAdvDhe;           /* offer ECDHE P-384 */
 #endif
-    byte   certChain[WOLFSPDM_MAX_CERT_CHAIN];
+    byte   certChain[WOLFSPDM_MAX_CERT_CHAIN + 8]; /* + one response header */
     byte   trustedCA[WOLFSPDM_MAX_TRUSTED_CA];
 #endif
 #ifndef WOLFSPDM_NO_MEAS
@@ -609,6 +609,7 @@ WOLFSPDM_TEST_API int wolfSPDM_ParseDigests(WOLFSPDM_CTX* ctx,
 WOLFSPDM_TEST_API int wolfSPDM_ParseCertificate(WOLFSPDM_CTX* ctx,
     const byte* buf, word32 bufSz, word16* portionLen, word16* remainderLen);
 WOLFSPDM_LOCAL int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx);
+WOLFSPDM_LOCAL int wolfSPDM_KeyExchangeValidated(WOLFSPDM_CTX* ctx);
 #endif
 
 #if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)

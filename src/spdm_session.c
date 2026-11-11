@@ -73,7 +73,7 @@ int wolfSPDM_GetVersion(WOLFSPDM_CTX* ctx)
         wolfSPDM_ParseVersion, txBuf, sizeof(txBuf), rxBuf, sizeof(rxBuf));
 }
 
-int wolfSPDM_KeyExchange(WOLFSPDM_CTX* ctx)
+static int wolfSPDM_KeyExchangeEx(WOLFSPDM_CTX* ctx, int revalidate)
 {
     byte txBuf[WOLFSPDM_KEY_EX_TX_SZ];
     byte rxBuf[WOLFSPDM_KEY_EX_RX_SZ];
@@ -92,9 +92,12 @@ int wolfSPDM_KeyExchange(WOLFSPDM_CTX* ctx)
     else {
         rc = WOLFSPDM_SUCCESS;
     #ifndef WOLFSPDM_NO_CERT
-        if (!wolfSPDM_IsTcgMode(ctx) && ctx->flags.rspKeyFromCert) {
+        if (revalidate && !wolfSPDM_IsTcgMode(ctx) &&
+                ctx->flags.rspKeyFromCert) {
             rc = wolfSPDM_ValidateCertChain(ctx);
         }
+    #else
+        (void)revalidate;
     #endif
     }
     if (rc == WOLFSPDM_SUCCESS) {
@@ -122,6 +125,19 @@ int wolfSPDM_KeyExchange(WOLFSPDM_CTX* ctx)
 
     return rc;
 }
+
+int wolfSPDM_KeyExchange(WOLFSPDM_CTX* ctx)
+{
+    return wolfSPDM_KeyExchangeEx(ctx, 1);
+}
+
+#ifndef WOLFSPDM_NO_CERT
+/* For a caller that ran ValidateCertChain immediately before */
+int wolfSPDM_KeyExchangeValidated(WOLFSPDM_CTX* ctx)
+{
+    return wolfSPDM_KeyExchangeEx(ctx, 0);
+}
+#endif
 
 /* FINISH must be sent encrypted (HANDSHAKE_IN_THE_CLEAR not negotiated) */
 static int wolfSPDM_FinishXfer(WOLFSPDM_CTX* ctx, const byte* finishBuf,

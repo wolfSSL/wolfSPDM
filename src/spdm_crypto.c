@@ -161,6 +161,18 @@ int wolfSPDM_ExportEphemeralPubKey(WOLFSPDM_CTX* ctx,
 
 /* ----- ECDH Shared Secret Computation ----- */
 
+/* Range and on-curve check; P-384 has cofactor 1, so no order check */
+static int wolfSPDM_EccCheckPub(ecc_key* key)
+{
+#if defined(USE_ECC_B_PARAM) || \
+    (defined(LIBWOLFSSL_VERSION_HEX) && LIBWOLFSSL_VERSION_HEX >= 0x05009001)
+    return wc_ecc_point_is_on_curve(&key->pubkey, key->idx);
+#else
+    /* Before v5.9.1 the point check needs USE_ECC_B_PARAM */
+    return wc_ecc_check_key(key);
+#endif
+}
+
 int wolfSPDM_ComputeSharedSecret(WOLFSPDM_CTX* ctx,
     const byte* peerPubKeyX, const byte* peerPubKeyY)
 {
@@ -192,7 +204,7 @@ int wolfSPDM_ComputeSharedSecret(WOLFSPDM_CTX* ctx,
     }
     /* Validate peer's public key is on the curve (prevents invalid-curve attacks) */
     if (rc == 0) {
-        rc = wc_ecc_check_key(&peerKey);
+        rc = wolfSPDM_EccCheckPub(&peerKey);
         if (rc != 0) {
             wolfSPDM_DebugPrint(ctx, "Peer public key invalid (not on curve): %d\n", rc);
         }
@@ -450,7 +462,7 @@ int wolfSPDM_VerifySignature(WOLFSPDM_CTX* ctx, const byte* hash, word32 hashSz,
         }
     }
     if (rc == 0) {
-        rc = wc_ecc_check_key(&verifyKey);
+        rc = wolfSPDM_EccCheckPub(&verifyKey);
         if (rc != 0) {
             wolfSPDM_DebugPrint(ctx, "Responder pub key invalid (not on curve): %d\n", rc);
         }

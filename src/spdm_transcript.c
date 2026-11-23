@@ -74,21 +74,24 @@ int wolfSPDM_Sha384Hash(byte* out,
     int rc;
 
     rc = wc_InitSha384(&sha);
-    if (rc != 0) return WOLFSPDM_E_CRYPTO_FAIL;
+    if (rc != 0) {
+        return WOLFSPDM_E_CRYPTO_FAIL;
+    }
     if (d1 != NULL && d1Sz > 0) {
         rc = wc_Sha384Update(&sha, d1, d1Sz);
-        if (rc != 0) { wc_Sha384Free(&sha); return WOLFSPDM_E_CRYPTO_FAIL; }
     }
-    if (d2 != NULL && d2Sz > 0) {
+    if (rc == 0 && d2 != NULL && d2Sz > 0) {
         rc = wc_Sha384Update(&sha, d2, d2Sz);
-        if (rc != 0) { wc_Sha384Free(&sha); return WOLFSPDM_E_CRYPTO_FAIL; }
     }
-    if (d3 != NULL && d3Sz > 0) {
+    if (rc == 0 && d3 != NULL && d3Sz > 0) {
         rc = wc_Sha384Update(&sha, d3, d3Sz);
-        if (rc != 0) { wc_Sha384Free(&sha); return WOLFSPDM_E_CRYPTO_FAIL; }
     }
-    rc = wc_Sha384Final(&sha, out);
+    if (rc == 0) {
+        rc = wc_Sha384Final(&sha, out);
+    }
     wc_Sha384Free(&sha);
+    wc_ForceZero(&sha, sizeof(sha));
+
     return (rc == 0) ? WOLFSPDM_SUCCESS : WOLFSPDM_E_CRYPTO_FAIL;
 }
 

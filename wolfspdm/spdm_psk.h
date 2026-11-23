@@ -71,8 +71,8 @@ WOLFSPDM_API int wolfSPDM_DeriveHandshakeKeysPsk(WOLFSPDM_CTX* ctx,
 
 /**
  * Perform PSK SPDM connection.
- * GET_VERSION -> GET_CAPABILITIES -> NEGOTIATE_ALGORITHMS ->
- * PSK_EXCHANGE -> PSK_FINISH -> app key derivation.
+ * GET_VERSION -> PSK_EXCHANGE -> PSK_FINISH -> application key derivation.
+ * This PSK flow skips GET_CAPABILITIES and NEGOTIATE_ALGORITHMS.
  *
  * @param ctx       wolfSPDM context (must have PSK set via wolfSPDM_SetPSK)
  * @return WOLFSPDM_SUCCESS or negative error code

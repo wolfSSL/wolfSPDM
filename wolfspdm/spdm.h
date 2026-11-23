@@ -29,8 +29,10 @@
 extern "C" {
 #endif
 
-/* Protocol mode: TCG binding + vendor commands.
- * For standard SPDM (emulator, measurements, challenge), see wolfSPDM standalone. */
+/* Protocol modes depend on the enabled build features.
+ * AUTO selects the standard DMTF certificate requester over MCTP.
+ * TCG selects the TPM binding. NUVOTON and NATIONS select vendor profiles.
+ * PSK selects the pre-shared key handshake when PSK support is enabled. */
 typedef enum {
     WOLFSPDM_MODE_AUTO        = 0,
     WOLFSPDM_MODE_NUVOTON     = 1,
@@ -160,11 +162,13 @@ WOLFSPDM_API int wolfSPDM_IsConnected(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API int wolfSPDM_Disconnect(WOLFSPDM_CTX* ctx);
 
 /* Individual handshake steps (for fine-grained control) */
+/* Start a fresh negotiation and retire any previous session. */
 WOLFSPDM_API int wolfSPDM_GetVersion(WOLFSPDM_CTX* ctx);
 #ifndef WOLFSPDM_NO_CERT
 WOLFSPDM_API int wolfSPDM_GetCapabilities(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API int wolfSPDM_NegotiateAlgorithms(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API int wolfSPDM_GetDigests(WOLFSPDM_CTX* ctx);
+/* Fetch the certificate chain before starting a session. */
 WOLFSPDM_API int wolfSPDM_GetCertificate(WOLFSPDM_CTX* ctx, int slotId);
 /* Verify the fetched chain against the trust anchor and install its leaf as
  * the responder key; call between GetCertificate and KeyExchange */
@@ -236,6 +240,7 @@ WOLFSPDM_API byte wolfSPDM_GetVersion_Negotiated(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API byte wolfSPDM_GetLastPeerError(WOLFSPDM_CTX* ctx);
 #ifdef WOLFSPDM_TCG
 WOLFSPDM_API word32 wolfSPDM_GetConnectionHandle(WOLFSPDM_CTX* ctx);
+/* From the last response's TCG header, which no SPDM key authenticates */
 WOLFSPDM_API word16 wolfSPDM_GetFipsIndicator(WOLFSPDM_CTX* ctx);
 #endif
 

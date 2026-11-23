@@ -103,6 +103,9 @@ jobs:
           - variant: tcg-pure
             configure: '--enable-nuvoton --enable-nations --enable-responder --disable-mctp'
             forbid: std
+          - variant: tpm-profile
+            configure: '--disable-mctp --enable-tcg --enable-psk --enable-nuvoton --enable-nations CFLAGS=-DWOLFSPDM_PROFILE_TPM'
+            forbid: std
           - variant: no-session-ext
             configure: '--disable-heartbeat --disable-key-update'
             forbid: tpm

@@ -27,9 +27,9 @@ post-quantum SPDM handshake**.
    (§12.2). TH1/TH2 and all downstream derivation are unchanged from the
    ECDHE path.
 
-Per FIPS 203 implicit rejection, a `K′ ≠ K` mismatch surfaces only as a FINISH
-integrity-check failure and is handled like any other session-message
-failure.
+With FIPS 203 implicit rejection, decapsulation returns a fallback shared
+secret. The requester detects the mismatch when checking `ResponderVerifyData`
+in `KEY_EXCHANGE_RSP` and returns `WOLFSPDM_E_BAD_HMAC`.
 
 ## How negotiation works
 

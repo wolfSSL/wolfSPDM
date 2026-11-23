@@ -307,6 +307,21 @@ if test "x$enable_responder" = "xyes"; then
     AC_DEFINE([WOLFSPDM_RESPONDER], [1], [Enable the SPDM responder])
 fi
 
+# The responder and TCG mutual auth sign with long-term identity keys
+if test "x$enable_responder" = "xyes" || test "x$enable_tcg" = "xyes"; then
+    AC_MSG_CHECKING([for wolfSSL ECC timing resistance])
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+        #include <wolfssl/options.h>
+        #include <wolfssl/wolfcrypt/settings.h>
+        #ifndef ECC_TIMING_RESISTANT
+        #error "no ECC timing resistance"
+        #endif
+    ]], [[]])],
+    [AC_MSG_RESULT([yes])],
+    [AC_MSG_RESULT([no])
+     AC_MSG_ERROR([--enable-responder and --enable-tcg require wolfSSL built with --enable-harden (ECC_TIMING_RESISTANT)])])
+fi
+
 AM_CONDITIONAL([BUILD_TCG], [test "x$enable_tcg" = "xyes"])
 AM_CONDITIONAL([BUILD_PSK], [test "x$enable_psk" = "xyes"])
 AM_CONDITIONAL([BUILD_NUVOTON], [test "x$enable_nuvoton" = "xyes"])

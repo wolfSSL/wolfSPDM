@@ -168,6 +168,9 @@ int wolfSPDM_SetResponderPubKey(WOLFSPDM_CTX* ctx,
     if (pubKeySz != WOLFSPDM_ECC_POINT_SIZE) {
         return WOLFSPDM_E_INVALID_ARG;
     }
+    if (pubKeySz > sizeof(ctx->rspPubKey)) {
+        return WOLFSPDM_E_BUFFER_SMALL;
+    }
 
     XMEMCPY(ctx->rspPubKey, pubKey, pubKeySz);
     ctx->rspPubKeyLen = pubKeySz;
@@ -420,8 +423,9 @@ int wolfSPDM_Connect(WOLFSPDM_CTX* ctx)
     return WOLFSPDM_E_INVALID_ARG;
 }
 
-/* Drop session state and wipe session-scoped secrets; configured identity
- * keys, PSK and trust anchors stay for a later connection */
+/* Drop session state and wipe session-scoped secrets. Configured identity
+ * keys, trust anchors and an unused PSK stay in the context. Set the PSK again
+ * with wolfSPDM_SetPSK when key derivation has consumed it. */
 void wolfSPDM_ResetSession(WOLFSPDM_CTX* ctx)
 {
     ctx->state = WOLFSPDM_STATE_INIT;
@@ -440,18 +444,9 @@ void wolfSPDM_ResetSession(WOLFSPDM_CTX* ctx)
     wc_ForceZero(ctx->reqAppSecret, sizeof(ctx->reqAppSecret));
     wc_ForceZero(ctx->rspAppSecret, sizeof(ctx->rspAppSecret));
 #endif
-    /* Handshake keys */
-    wc_ForceZero(ctx->reqHsSecret, sizeof(ctx->reqHsSecret));
-    wc_ForceZero(ctx->rspHsSecret, sizeof(ctx->rspHsSecret));
-    wc_ForceZero(ctx->reqFinishedKey, sizeof(ctx->reqFinishedKey));
-    wc_ForceZero(ctx->rspFinishedKey, sizeof(ctx->rspFinishedKey));
-    /* Secrets and hashes */
-    wc_ForceZero(ctx->handshakeSecret, sizeof(ctx->handshakeSecret));
-    wc_ForceZero(ctx->sharedSecret, sizeof(ctx->sharedSecret));
-    ctx->sharedSecretSz = 0;
+    wolfSPDM_ClearHandshakeSecrets(ctx);
     wc_ForceZero(ctx->th1, sizeof(ctx->th1));
     wc_ForceZero(ctx->th2, sizeof(ctx->th2));
-    wolfSPDM_FreeEphemeralKey(ctx);
 #ifndef WOLFSPDM_NO_CERT
     ctx->rspCaps = 0;
     ctx->dataTransferSize = 0;
@@ -460,6 +455,7 @@ void wolfSPDM_ResetSession(WOLFSPDM_CTX* ctx)
 #ifndef WOLFSPDM_NO_MEAS
     ctx->measBlockCount = 0;
     ctx->measRecordLen = 0;
+    wc_ForceZero(ctx->measRecord, sizeof(ctx->measRecord));
 #endif
 #if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)
     wolfSPDM_AttestFree(ctx);
@@ -480,6 +476,7 @@ int wolfSPDM_Disconnect(WOLFSPDM_CTX* ctx)
         byte rxBuf[16];   /* END_SESSION_ACK: 4 bytes */
         word32 txSz = sizeof(txBuf);
         word32 rxSz;
+        int peerError = 0;
 
         rc = wolfSPDM_BuildEndSession(ctx, txBuf, &txSz);
         if (rc == WOLFSPDM_SUCCESS) {
@@ -490,12 +487,12 @@ int wolfSPDM_Disconnect(WOLFSPDM_CTX* ctx)
             if (rxSz < 4) {
                 rc = WOLFSPDM_E_BUFFER_SMALL;
             }
-            else if (wolfSPDM_CheckError(rxBuf, rxSz, NULL)) {
+            else if (wolfSPDM_CheckError(rxBuf, rxSz, &peerError)) {
+                ctx->lastPeerErrorCode = (byte)peerError;
                 rc = WOLFSPDM_E_PEER_ERROR;
             }
             else if (rxSz != 4 || rxBuf[0] != ctx->spdmVersion ||
-                     rxBuf[1] != SPDM_END_SESSION_ACK ||
-                     rxBuf[2] != 0 || rxBuf[3] != 0) {
+                     rxBuf[1] != SPDM_END_SESSION_ACK) {
                 rc = WOLFSPDM_E_PEER_ERROR;
             }
         }
@@ -573,12 +570,6 @@ static int wolfSPDM_TcgSendReceive(WOLFSPDM_CTX* ctx,
         }
     }
     if (rc == WOLFSPDM_SUCCESS) {
-        /* Capture FIPS indicator from response if non-zero */
-        tag = SPDM_Get16BE(tcgRx + 10);
-        if (tag != 0) {
-            ctx->fipsIndicator = tag;
-        }
-
         /* Extract payload (everything after 16-byte TCG header) */
         msgSize = SPDM_Get32BE(tcgRx + 2);
         if (msgSize < WOLFSPDM_TCG_HEADER_SIZE || msgSize > tcgRxSz) {
@@ -597,6 +588,12 @@ static int wolfSPDM_TcgSendReceive(WOLFSPDM_CTX* ctx,
             XMEMCPY(rxBuf, tcgRx + WOLFSPDM_TCG_HEADER_SIZE, payloadSz);
             *rxSz = payloadSz;
         }
+    }
+    /* Each exchange replaces the indicator; only an exact APPROVED counts */
+    ctx->fipsIndicator = WOLFSPDM_FIPS_NON_FIPS;
+    if (rc == WOLFSPDM_SUCCESS &&
+            SPDM_Get16BE(tcgRx + 10) == WOLFSPDM_FIPS_APPROVED) {
+        ctx->fipsIndicator = WOLFSPDM_FIPS_APPROVED;
     }
 
     /* Clear vendor messages carry PSK material */

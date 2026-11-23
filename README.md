@@ -90,6 +90,8 @@ sudo ldconfig
 
 `--enable-sp` enables Single Precision math with optimized ECC P-384, required for SPDM Algorithm Set B on ARM64 and other constrained targets. `--enable-all` works as a superset.
 
+The responder and TCG builds sign with long-term identity keys, so they also require wolfSSL's default `--enable-harden` (`ECC_TIMING_RESISTANT`). Configure and the build reject a wolfSSL built with `--disable-harden`.
+
 For post-quantum support, build wolfSSL with `--enable-mldsa` (FIPS 204) and/or `--enable-mlkem` (FIPS 203). Use wolfSSL master or a release carrying the `wc_MlDsaKey` and `wc_MlKemKey` APIs. wolfSPDM auto-enables each when the linked wolfSSL provides it (`--disable-mldsa` / `--disable-mlkem` force them off); enabling both gives a fully post-quantum handshake (ML-KEM key exchange + ML-DSA authentication).
 
 ## Build

@@ -136,6 +136,14 @@ int wolfSPDM_BuildKeyExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
     if (ctx == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
+#ifndef WOLFSPDM_NO_CERT
+    /* The standard binding defines no provisioned-key format for Ct, so a
+     * pin needs a retrieved chain to name a slot (DSP0274 KEY_EXCHANGE). */
+    if (!wolfSPDM_IsTcgMode(ctx) && ctx->flags.hasRspPubKey &&
+            !ctx->flags.rspKeyFromCert && ctx->certChainLen == 0) {
+        return WOLFSPDM_E_BAD_STATE;
+    }
+#endif
     wolfSPDM_KeyExOpaque(ctx, &opaque, &opaqueSz);
     if (opaque == NULL) {
         return WOLFSPDM_E_NOT_AVAILABLE;
@@ -470,16 +478,20 @@ int wolfSPDM_ParseVersion(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufSz)
     word32 i;
     byte highestVersion = 0;  /* No version found yet */
     byte maxVer;
+    int legacyCount;
 
     SPDM_CHECK_PARSE_OR_ERROR_ARGS(ctx, buf, bufSz, 6);
     SPDM_CHECK_RESPONSE(ctx, buf, bufSz, SPDM_VERSION, WOLFSPDM_E_VERSION_MISMATCH);
 
-    /* VersionNumberEntryCount is the one-byte field at offset 5 (byte 4
-     * reserved) per DSP0274; older wolfTPM responders placed it at
-     * offset 4, so fall back to that when offset 5 is zero.
-     * Offset 6+: VersionNumberEntry array (2 bytes each, LE) */
+    /* DSP0274 puts the count at offset 5; older wolfTPM responders used 4.
+     * Allow that only for TCG, which is all the TPM profile speaks. */
+#ifdef WOLFSPDM_PROFILE_TPM
+    legacyCount = 1;
+#else
+    legacyCount = wolfSPDM_IsTcgMode(ctx);
+#endif
     entryCount = buf[5];
-    if (entryCount == 0) {
+    if (entryCount == 0 && legacyCount) {
         entryCount = buf[4];
     }
 
@@ -528,6 +540,7 @@ int wolfSPDM_ParseKeyExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufS
     byte expectedHmac[WOLFSPDM_HASH_SIZE];
     const byte* signature;
     const byte* rspVerifyData;
+    int haveSharedSecret = 0;
     int rc;
 
     SPDM_CHECK_PARSE_OR_ERROR_ARGS(ctx, buf, bufSz, 140);
@@ -592,6 +605,7 @@ int wolfSPDM_ParseKeyExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufS
             &buf[40 + WOLFSPDM_ECC_KEY_SIZE]);
     }
     if (rc == WOLFSPDM_SUCCESS) {
+        haveSharedSecret = 1;
         rc = wolfSPDM_TranscriptHash(ctx, ctx->th1);
     }
     if (rc == WOLFSPDM_SUCCESS) {
@@ -619,6 +633,14 @@ int wolfSPDM_ParseKeyExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufS
         ctx->reqSlotIdParam = buf[7];
         ctx->state = WOLFSPDM_STATE_KEY_EX;
     }
+    else if (haveSharedSecret) {
+        wolfSPDM_ClearHandshakeSecrets(ctx);
+        wc_ForceZero(ctx->reqDataKey, sizeof(ctx->reqDataKey));
+        wc_ForceZero(ctx->rspDataKey, sizeof(ctx->rspDataKey));
+        wc_ForceZero(ctx->reqDataIv, sizeof(ctx->reqDataIv));
+        wc_ForceZero(ctx->rspDataIv, sizeof(ctx->rspDataIv));
+        ctx->state = WOLFSPDM_STATE_ERROR;
+    }
 
     wc_ForceZero(expectedHmac, sizeof(expectedHmac));
     wc_ForceZero(th1SigHash, sizeof(th1SigHash));
@@ -632,6 +654,10 @@ int wolfSPDM_ParseFinishRsp(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufSz)
     if (buf[1] == SPDM_FINISH_RSP) {
         int addRc;
         word32 rspMsgLen = 4;
+
+        if (ctx->spdmVersion != 0 && buf[0] != ctx->spdmVersion) {
+            return WOLFSPDM_E_BAD_STATE;
+        }
 
         /* SPDM 1.4 adds OpaqueLength(2) + OpaqueData(var) to FINISH_RSP */
         if (ctx->spdmVersion >= SPDM_VERSION_14) {
@@ -660,6 +686,7 @@ int wolfSPDM_ParseFinishRsp(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufSz)
     }
 
     if (buf[1] == SPDM_ERROR) {
+        ctx->lastPeerErrorCode = buf[2];
         wolfSPDM_DebugPrint(ctx, "FINISH error: 0x%02x\n", buf[2]);
         return WOLFSPDM_E_PEER_ERROR;
     }

@@ -25,6 +25,9 @@
 
 #include "spdm_internal.h"
 
+#define MCTP_MESSAGE_TYPE_SECURED_SPDM  0x06
+#define MCTP_MESSAGE_TYPE_MASK          0x7F
+
 /*
  * SPDM Secured Message Format (DSP0277):
  *
@@ -51,7 +54,7 @@ static int wolfSPDM_EncryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
     byte plainBuf[WOLFSPDM_XFER_MSG_SIZE + 2 + 16]; /* AppDataLength, pad */
     byte tag[WOLFSPDM_AEAD_TAG_SIZE];
     word32 plainBufSz;
-    word16 recordLen;
+    word32 recordLen;
     word32 hdrSz;
     word32 aadSz;
     int aesInit = 0;
@@ -70,24 +73,23 @@ static int wolfSPDM_EncryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
          * Header/AAD: SessionID(4 LE) + SeqNum(8 LE) + Length(2 LE) = 14 bytes
          * IV XOR: Leftmost 8 bytes (bytes 0-7) with 8-byte LE sequence number
          */
-        word16 appDataLen = (word16)plainSz;
-
-        word16 unpadded = (word16)(2 + appDataLen);
-        word16 padLen = (word16)((16 - (unpadded % 16)) % 16);
-        word16 encPayloadSz = (word16)(unpadded + padLen);
+        word32 unpadded = 2 + plainSz;
+        word32 padLen = (16 - (unpadded % 16)) % 16;
+        word32 encPayloadSz = unpadded + padLen;
 
         plainBufSz = encPayloadSz;
         /* Length field = ciphertext + MAC
          * (per Nuvoton spec page 25: Length=160=144+16) */
-        recordLen = (word16)(encPayloadSz + WOLFSPDM_AEAD_TAG_SIZE);
+        recordLen = encPayloadSz + WOLFSPDM_AEAD_TAG_SIZE;
         hdrSz = 14;  /* 4 + 8 + 2 (TCG binding format) */
 
-        if (*encSz < hdrSz + plainBufSz + WOLFSPDM_AEAD_TAG_SIZE) {
+        if (recordLen > 0xFFFF ||
+                *encSz < hdrSz + plainBufSz + WOLFSPDM_AEAD_TAG_SIZE) {
             return WOLFSPDM_E_BUFFER_SMALL;
         }
 
         /* Build plaintext: AppDataLength(2 LE) || SPDM message || RandomData */
-        SPDM_Set16LE(plainBuf, appDataLen);
+        SPDM_Set16LE(plainBuf, (word16)plainSz);
         XMEMCPY(&plainBuf[2], plain, plainSz);
         /* Fill RandomData with actual random bytes per Nuvoton spec */
         if (padLen > 0) {
@@ -102,7 +104,7 @@ static int wolfSPDM_EncryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
          * Length(2 LE) = 14 bytes */
         SPDM_Set32LE(&enc[0], ctx->sessionId);
         SPDM_Set64LE(&enc[4], ctx->reqSeqNum);
-        SPDM_Set16LE(&enc[12], recordLen);
+        SPDM_Set16LE(&enc[12], (word16)recordLen);
 
         aadSz = 14;
         XMEMCPY(aad, enc, aadSz);
@@ -118,25 +120,20 @@ static int wolfSPDM_EncryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
          * Header: SessionID(4 LE) + SeqNum(2 LE) + Length(2 LE) = 8 bytes
          * AAD = Header
          */
-        word16 appDataLen = (word16)(appMsg ? plainSz : 1 + plainSz);
-        word16 encDataLen = (word16)(2 + appDataLen);
-
-        /* MCTP carries a 16-bit sequence number; fail rather than let the wire
-         * value and the 64-bit IV counter diverge past 0xFFFF */
-        if (ctx->reqSeqNum > 0xFFFF) {
-            return WOLFSPDM_E_SEQUENCE;
-        }
+        word32 appDataLen = appMsg ? plainSz : 1 + plainSz;
+        word32 encDataLen = 2 + appDataLen;
 
         plainBufSz = encDataLen;
-        recordLen = (word16)(encDataLen + WOLFSPDM_AEAD_TAG_SIZE);
+        recordLen = encDataLen + WOLFSPDM_AEAD_TAG_SIZE;
         hdrSz = 8;  /* 4 + 2 + 2 */
 
-        if (*encSz < hdrSz + recordLen) {
+        /* The record Length is a 16-bit field */
+        if (recordLen > 0xFFFF || *encSz < hdrSz + recordLen) {
             return WOLFSPDM_E_BUFFER_SMALL;
         }
 
         /* Build plaintext: AppDataLen(2 LE) || MCTP header(0x05) || SPDM msg */
-        SPDM_Set16LE(plainBuf, appDataLen);
+        SPDM_Set16LE(plainBuf, (word16)appDataLen);
         if (appMsg) {
             XMEMCPY(&plainBuf[2], plain, plainSz);
         } else {
@@ -146,8 +143,10 @@ static int wolfSPDM_EncryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
 
         /* Build header/AAD: SessionID(4 LE) + SeqNum(2 LE) + Length(2 LE) */
         SPDM_Set32LE(&enc[0], ctx->sessionId);
+        /* DSP0276 1.3 4.1: the wire carries the low 16 bits and both ends
+         * track the upper 48, so the DSP0277 IV uses the full counter */
         SPDM_Set16LE(&enc[4], (word16)ctx->reqSeqNum);
-        SPDM_Set16LE(&enc[6], recordLen);
+        SPDM_Set16LE(&enc[6], (word16)recordLen);
 
         aadSz = 8;
         XMEMCPY(aad, enc, aadSz);
@@ -167,14 +166,22 @@ static int wolfSPDM_EncryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
         rc = wc_AesGcmEncrypt(&aes, &enc[hdrSz], plainBuf, plainBufSz,
             iv, WOLFSPDM_AEAD_IV_SIZE, tag, WOLFSPDM_AEAD_TAG_SIZE, aad, aadSz);
     }
+    wc_ForceZero(iv, sizeof(iv));
     if (aesInit) {
         wc_AesFree(&aes);
+        wc_ForceZero(&aes, sizeof(aes));
     }
 
     if (rc == 0) {
         XMEMCPY(&enc[hdrSz + plainBufSz], tag, WOLFSPDM_AEAD_TAG_SIZE);
         *encSz = hdrSz + plainBufSz + WOLFSPDM_AEAD_TAG_SIZE;
         ctx->reqSeqNum++;
+#ifndef WOLFSPDM_NO_MEAS
+        /* Only back-to-back GET_MEASUREMENTS extend L1/L2 */
+        if (!appMsg && ctx->l1l2State == WOLFSPDM_RUN_OPEN) {
+            ctx->l1l2State = WOLFSPDM_RUN_LIVE;
+        }
+#endif
         wolfSPDM_DebugPrint(ctx, "Encrypted %u bytes -> %u bytes (seq=%llu)\n",
             plainSz, *encSz, (unsigned long long)(ctx->reqSeqNum - 1));
     }
@@ -241,7 +248,7 @@ static int wolfSPDM_DecryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
                 (unsigned long long)ctx->rspSeqNum);
             return WOLFSPDM_E_SEQUENCE;
         }
-        if (rspLen < WOLFSPDM_AEAD_TAG_SIZE || encSz < hdrSz + rspLen)
+        if (rspLen < WOLFSPDM_AEAD_TAG_SIZE || encSz != hdrSz + rspLen)
             return WOLFSPDM_E_BUFFER_SMALL;
 
         cipherLen = (word32)(rspLen - WOLFSPDM_AEAD_TAG_SIZE);
@@ -276,7 +283,8 @@ static int wolfSPDM_DecryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
                 rspSessionId, ctx->sessionId);
             return WOLFSPDM_E_SESSION_INVALID;
         }
-        if ((word64)rspSeqNum != ctx->rspSeqNum) {
+        /* Partial sequence number against the tracked 64-bit counter */
+        if (rspSeqNum != (word16)ctx->rspSeqNum) {
             wolfSPDM_DebugPrint(ctx, "Seq mismatch: %u != %llu\n",
                 rspSeqNum, (unsigned long long)ctx->rspSeqNum);
             return WOLFSPDM_E_SEQUENCE;
@@ -292,7 +300,7 @@ static int wolfSPDM_DecryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
         ciphertext = enc + hdrSz;
         tag = enc + hdrSz + cipherLen;
         XMEMCPY(aad, enc, aadSz);
-        wolfSPDM_BuildIV(iv, ctx->rspDataIv, (word64)rspSeqNum);
+        wolfSPDM_BuildIV(iv, ctx->rspDataIv, ctx->rspSeqNum);
 #endif
     }
 
@@ -320,8 +328,10 @@ static int wolfSPDM_DecryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
             ctx->rspSeqNum++;
         }
     }
+    wc_ForceZero(iv, sizeof(iv));
     if (aesInit) {
         wc_AesFree(&aes);
+        wc_ForceZero(&aes, sizeof(aes));
     }
 
     /* ----- Parse decrypted payload ----- */
@@ -356,6 +366,9 @@ static int wolfSPDM_DecryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
                 ret = WOLFSPDM_E_BUFFER_SMALL;
             } else if (!appMsg && decrypted[2] != MCTP_MESSAGE_TYPE_SPDM) {
                 ret = WOLFSPDM_E_DECRYPT_FAIL;
+            } else if (appMsg && (decrypted[2] & MCTP_MESSAGE_TYPE_MASK) ==
+                    MCTP_MESSAGE_TYPE_SECURED_SPDM) {
+                ret = WOLFSPDM_E_DECRYPT_FAIL;
             } else {
                 XMEMCPY(plain, &decrypted[2 + typeSz], appDataLen - typeSz);
                 *plainSz = appDataLen - typeSz;
@@ -374,11 +387,55 @@ static int wolfSPDM_DecryptRecord(WOLFSPDM_CTX* ctx, int appMsg,
     return ret;
 }
 
+/* DSP0274 section 11: an authenticated DecryptError ends the session */
+static void wolfSPDM_CheckSessionEnd(WOLFSPDM_CTX* ctx, const byte* msg,
+    word32 msgSz)
+{
+    int errorCode = 0;
+
+    if (wolfSPDM_CheckError(msg, msgSz, &errorCode) &&
+            errorCode == SPDM_ERROR_DECRYPT_ERROR) {
+        wolfSPDM_ResetSession(ctx);
+        ctx->state = WOLFSPDM_STATE_ERROR;
+    }
+}
+
 int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
     const byte* enc, word32 encSz,
     byte* plain, word32* plainSz)
 {
+    int rc = wolfSPDM_DecryptRecord(ctx, 0, enc, encSz, plain, plainSz);
+
+    if (rc == WOLFSPDM_SUCCESS) {
+        wolfSPDM_CheckSessionEnd(ctx, plain, *plainSz);
+    }
+    return rc;
+}
+
+#ifdef WOLFSPDM_RESPONDER
+/* The responder retires its sessions through its own reset */
+int wolfSPDM_DecryptRequest(WOLFSPDM_CTX* ctx,
+    const byte* enc, word32 encSz,
+    byte* plain, word32* plainSz)
+{
     return wolfSPDM_DecryptRecord(ctx, 0, enc, encSz, plain, plainSz);
+}
+#endif
+
+/* Returns 1 for a cleartext SPDM reply, which only an ERROR should be.
+ * A record starts with our session ID, whose requester half keeps its first
+ * byte out of 0x10-0x1F (wolfSPDM_SetRequesterSessionId). */
+int wolfSPDM_ClearPeerError(WOLFSPDM_CTX* ctx, const byte* rx, word32 rxSz)
+{
+    if (rxSz < 2 || rx[0] < 0x10 || rx[0] > 0x1F ||
+            (rxSz >= 4 && SPDM_Get32LE(rx) == ctx->sessionId)) {
+        return 0;
+    }
+    if (rxSz >= 4 && rx[1] == SPDM_ERROR) {
+        ctx->lastPeerErrorCode = rx[2];
+        wolfSPDM_DebugPrint(ctx, "SPDM ERROR 0x%02x in the clear\n", rx[2]);
+    }
+    return 1;
 }
 
 int wolfSPDM_SecuredXfer(WOLFSPDM_CTX* ctx,
@@ -394,6 +451,9 @@ int wolfSPDM_SecuredXfer(WOLFSPDM_CTX* ctx,
     rc = wolfSPDM_EncryptInternal(ctx, cmdPlain, cmdSz, encBuf, &encSz);
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_SendReceive(ctx, encBuf, encSz, rxBuf, &rxSz);
+    }
+    if (rc == WOLFSPDM_SUCCESS && wolfSPDM_ClearPeerError(ctx, rxBuf, rxSz)) {
+        rc = WOLFSPDM_E_PEER_ERROR;
     }
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_DecryptInternal(ctx, rxBuf, rxSz, rspPlain, rspSz);
@@ -417,12 +477,6 @@ int wolfSPDM_SecuredExchange(WOLFSPDM_CTX* ctx,
              !wolfSPDM_IsTcgMode(ctx))) {
         return WOLFSPDM_E_NOT_CONNECTED;
     }
-#ifndef WOLFSPDM_NO_MEAS
-    /* Only back-to-back GET_MEASUREMENTS extend L1/L2 */
-    if (ctx->l1l2State == WOLFSPDM_RUN_OPEN) {
-        ctx->l1l2State = WOLFSPDM_RUN_LIVE;
-    }
-#endif
 #ifndef WOLFSPDM_NO_CHUNK
     if (wolfSPDM_ChunkOn(ctx)) {
         return wolfSPDM_ChunkExchange(ctx, 1, cmdPlain, cmdSz, rspPlain,
@@ -484,8 +538,10 @@ int wolfSPDM_SendData(WOLFSPDM_CTX* ctx, const byte* data, word32 dataSz)
     if (ctx == NULL || data == NULL || dataSz == 0) {
         return WOLFSPDM_E_INVALID_ARG;
     }
-    /* Type 0x05 would reach the peer as an SPDM request */
-    if (data[0] == MCTP_MESSAGE_TYPE_SPDM) {
+    /* SPDM requests have a separate API. DSP0276 forbids nesting records. */
+    if (data[0] == MCTP_MESSAGE_TYPE_SPDM ||
+            (data[0] & MCTP_MESSAGE_TYPE_MASK) ==
+                MCTP_MESSAGE_TYPE_SECURED_SPDM) {
         return WOLFSPDM_E_INVALID_ARG;
     }
 
@@ -525,6 +581,7 @@ int wolfSPDM_ReceiveData(WOLFSPDM_CTX* ctx, byte* data, word32* dataSz)
         if (*dataSz >= 4 && data[2] == SPDM_ERROR) {
             ctx->lastPeerErrorCode = data[3];
         }
+        wolfSPDM_CheckSessionEnd(ctx, data + 1, *dataSz - 1);
         rc = WOLFSPDM_E_PEER_ERROR;
     }
 

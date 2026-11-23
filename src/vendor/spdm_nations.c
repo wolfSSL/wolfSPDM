@@ -68,6 +68,7 @@ int wolfSPDM_Nations_GetStatus(WOLFSPDM_CTX* ctx,
         status->spdmEnabled = 1;
         status->pskProvisioned = (rsp.payload[2] != 0);
         status->spdmOnlyLocked = (rsp.payload[3] != 0);
+        status->spdmOnlyPending = (rsp.payload[3] == 0x81);
         wolfSPDM_DebugPrint(ctx, "GET_STS_: v%u.%u PSK=%s SPDMOnly=0x%02x\n",
             rsp.payload[0], rsp.payload[1],
             status->pskProvisioned ? "YES" : "NO",

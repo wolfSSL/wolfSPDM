@@ -298,8 +298,9 @@ int wolfSPDM_GenerateMlKemKey(WOLFSPDM_CTX* ctx, byte* ek, word32* ekSz)
     return rc;
 }
 
-/* Recover the shared secret from the responder's ciphertext; FIPS 203
- * implicit rejection means a bad ciphertext only shows up at FINISH */
+/* Recover the shared secret from the responder's ciphertext. After FIPS 203
+ * implicit rejection, the secret mismatch is detected when verifying
+ * ResponderVerifyData in KEY_EXCHANGE_RSP. */
 int wolfSPDM_MlKemDecapsulate(WOLFSPDM_CTX* ctx, const byte* ct, word32 ctSz)
 {
     word32 expCtSz = 0;

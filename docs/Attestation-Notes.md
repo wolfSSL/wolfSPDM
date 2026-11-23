@@ -29,7 +29,9 @@ exchanges: each call restarts the hash at the VCA transcript unless the
 previous `GET_MEASUREMENTS` left it open (`WOLFSPDM_RUN_OPEN`, i.e. the prior
 call was unsigned). A signed request closes the run and verifies the
 signature over it; an unsigned request adds itself to the hash and leaves the
-run open for the next call.
+run open for the next call. Any other SPDM request sealed in the session ends
+an open run, including `KEY_UPDATE` and messages sealed with
+`wolfSPDM_EncryptMessage`.
 
 Signature verification (measurements and `CHALLENGE_AUTH`) uses whichever
 asymmetric algorithm was negotiated: ECDSA P-384 or, on SPDM 1.4 with ML-DSA

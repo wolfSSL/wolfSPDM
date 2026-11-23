@@ -98,6 +98,7 @@ extern "C" {
 #define SPDM_KEY_EXCHANGE_RSP       0x64
 #define SPDM_FINISH_RSP             0x65
 #define SPDM_END_SESSION_ACK        0x6C
+#define SPDM_VENDOR_DEFINED_RESPONSE 0x7E
 #define SPDM_ERROR                  0x7F
 
 /* SPDM Error Codes (in Param1 of ERROR response) */
@@ -248,6 +249,9 @@ extern "C" {
 #define WOLFSPDM_MAX_SIG_SIZE       WOLFSPDM_ECC_SIG_SIZE
 #define WOLFSPDM_RSP_PUBKEY_SZ      (WOLFSPDM_PUBKEY_BUF_SZ / 2)
 #endif
+#if WOLFSPDM_RSP_PUBKEY_SZ < WOLFSPDM_ECC_POINT_SIZE
+    #error "WOLFSPDM_RSP_PUBKEY_SZ must hold a raw P-384 public key"
+#endif
 #ifdef WOLFSPDM_HAVE_MLKEM
 /* ExchangeData: the ML-KEM-1024 encapsulation key and ciphertext are largest */
 #define WOLFSPDM_MAX_KEX_DATA       1568
@@ -352,11 +356,11 @@ extern "C" {
 #define SPDM_KEM_ALGO_ML_KEM_768    0x0002
 #define SPDM_KEM_ALGO_ML_KEM_1024   0x0004
 
-/* NEGOTIATE_ALGORITHMS: 32-byte header and up to five AlgStructs */
+/* NEGOTIATE_ALGORITHMS: 32-byte header and up to four AlgStructs */
 #ifdef WOLFSPDM_HAVE_MLKEM
-#define WOLFSPDM_NEG_ALGO_SZ        52
-#else
 #define WOLFSPDM_NEG_ALGO_SZ        48
+#else
+#define WOLFSPDM_NEG_ALGO_SZ        44
 #endif
 
 /* SPDM cert chain header: Length(2) + Reserved(2) + RootHash(48) */

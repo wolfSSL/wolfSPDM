@@ -130,27 +130,29 @@ int wolfSPDM_BuildPskExchange(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
 int wolfSPDM_ParsePskExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf,
     word32 bufSz)
 {
+    const word32 fixedSz = 12;
     word16 rspContextLen, opaqueLen;
     word32 verifyOffset;
     word32 rspPartialLen;
     byte th1Hash[WOLFSPDM_HASH_SIZE];
     byte expectedHmac[WOLFSPDM_HASH_SIZE];
     const byte* rspVerifyData;
+    int usedPsk = 0;
     int rc;
 
-    /* Minimum: header(4) + RspSessionID(2) + Reserved(1) + RspContextLen(2) +
-     * OpaqueLen(2) + VerifyData(48) = 59 */
-    SPDM_CHECK_PARSE_OR_ERROR_ARGS(ctx, buf, bufSz, 59);
+    /* The fixed fields take 12 bytes, followed by variable fields and
+     * ResponderVerifyData. */
+    SPDM_CHECK_PARSE_OR_ERROR_ARGS(ctx, buf, bufSz,
+        fixedSz + WOLFSPDM_HASH_SIZE);
     SPDM_CHECK_RESPONSE(ctx, buf, bufSz, SPDM_PSK_EXCHANGE_RSP,
         WOLFSPDM_E_KEY_EXCHANGE);
 
-    /* Per SPDM 1.3 DSP0274 Table 65:
-     * [4-5] RspSessionID, [6] MutAuthRequested, [7] ReqSlotIDParam,
-     * [8-9] RspContextLength, [10-11] OpaqueDataLength */
+    /* DSP0274 places RspSessionID at bytes 4-5 and reserves bytes 6-7.
+     * Bytes 8-9 hold ResponderContext length and 10-11 OpaqueDataLength. */
     rspContextLen = SPDM_Get16LE(&buf[8]);
     opaqueLen = SPDM_Get16LE(&buf[10]);
 
-    verifyOffset = 12 + (word32)rspContextLen + opaqueLen;
+    verifyOffset = fixedSz + (word32)rspContextLen + opaqueLen;
     rspPartialLen = verifyOffset;
 
     if (bufSz < verifyOffset + WOLFSPDM_HASH_SIZE) {
@@ -168,6 +170,7 @@ int wolfSPDM_ParsePskExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf,
     }
     if (rc == WOLFSPDM_SUCCESS) {
         XMEMCPY(ctx->th1, th1Hash, WOLFSPDM_HASH_SIZE);
+        usedPsk = (ctx->pskSz != 0);
         rc = wolfSPDM_DeriveHandshakeKeysPsk(ctx, th1Hash);
     }
 
@@ -177,8 +180,6 @@ int wolfSPDM_ParsePskExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf,
             expectedHmac);
     }
     if (rc == WOLFSPDM_SUCCESS) {
-        wolfSPDM_DebugHex(ctx, "Expected HMAC", expectedHmac,
-            WOLFSPDM_HASH_SIZE);
         wolfSPDM_DebugHex(ctx, "Received HMAC", rspVerifyData,
             WOLFSPDM_HASH_SIZE);
         if (wolfSPDM_ConstCompare(expectedHmac, rspVerifyData,
@@ -198,6 +199,10 @@ int wolfSPDM_ParsePskExchangeRsp(WOLFSPDM_CTX* ctx, const byte* buf,
                          ((word32)ctx->rspSessionId << 16);
         ctx->state = WOLFSPDM_STATE_KEY_EX;
     }
+    else if (usedPsk) {
+        wolfSPDM_ResetSession(ctx);
+        ctx->state = WOLFSPDM_STATE_ERROR;
+    }
 
     wc_ForceZero(expectedHmac, sizeof(expectedHmac));
     wc_ForceZero(th1Hash, sizeof(th1Hash));
@@ -209,14 +214,19 @@ int wolfSPDM_BuildPskFinish(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
     byte th2Hash[WOLFSPDM_HASH_SIZE];
     byte verifyData[WOLFSPDM_HASH_SIZE];
     word32 offset = 0;
+    word32 minSz;
     int rc;
 
     if (ctx == NULL || buf == NULL || bufSz == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
     }
 
-    /* PSK_FINISH = header(4) + VerifyData(48) = 52 bytes */
-    if (*bufSz < 4 + WOLFSPDM_HASH_SIZE) {
+    /* header(4) + [OpaqueDataLength(2) for 1.4+] + VerifyData(48) */
+    minSz = 4 + WOLFSPDM_HASH_SIZE;
+    if (ctx->spdmVersion >= SPDM_VERSION_14) {
+        minSz += 2;
+    }
+    if (*bufSz < minSz) {
         return WOLFSPDM_E_BUFFER_SMALL;
     }
 
@@ -225,8 +235,12 @@ int wolfSPDM_BuildPskFinish(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
     buf[offset++] = SPDM_PSK_FINISH;
     buf[offset++] = 0x00;  /* Param1 */
     buf[offset++] = 0x00;  /* Param2 */
+    if (ctx->spdmVersion >= SPDM_VERSION_14) {
+        buf[offset++] = 0x00;  /* OpaqueDataLength = 0 (LE) */
+        buf[offset++] = 0x00;
+    }
 
-    /* Add PSK_FINISH header to transcript, compute TH2 */
+    /* Add PSK_FINISH up to VerifyData to transcript, compute TH2 */
     rc = wolfSPDM_TranscriptAdd(ctx, buf, offset);
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_TranscriptHash(ctx, th2Hash);
@@ -260,7 +274,30 @@ int wolfSPDM_ParsePskFinishRsp(WOLFSPDM_CTX* ctx, const byte* buf,
     SPDM_CHECK_PARSE_ARGS(ctx, buf, bufSz, 4);
 
     if (buf[1] == SPDM_PSK_FINISH_RSP) {
-        int addRc = wolfSPDM_TranscriptAdd(ctx, buf, 4);
+        int addRc;
+        word32 rspMsgLen = 4;
+
+        if (ctx->spdmVersion != 0 && buf[0] != ctx->spdmVersion) {
+            return WOLFSPDM_E_BAD_STATE;
+        }
+
+        /* SPDM 1.4 adds OpaqueDataLength(2) + OpaqueData(var) */
+        if (ctx->spdmVersion >= SPDM_VERSION_14) {
+            word16 opaqueLen;
+            if (bufSz < 6) {
+                return WOLFSPDM_E_BUFFER_SMALL;
+            }
+            opaqueLen = SPDM_Get16LE(&buf[4]);
+            if (opaqueLen > WOLFSPDM_FINISH_OPAQUE_MAX) {
+                return WOLFSPDM_E_INVALID_ARG;
+            }
+            rspMsgLen = 4 + 2 + opaqueLen;
+            if (bufSz < rspMsgLen) {
+                return WOLFSPDM_E_BUFFER_SMALL;
+            }
+        }
+
+        addRc = wolfSPDM_TranscriptAdd(ctx, buf, rspMsgLen);
         if (addRc != WOLFSPDM_SUCCESS) {
             return addRc;
         }
@@ -270,6 +307,7 @@ int wolfSPDM_ParsePskFinishRsp(WOLFSPDM_CTX* ctx, const byte* buf,
     }
 
     if (buf[1] == SPDM_ERROR) {
+        ctx->lastPeerErrorCode = buf[2];
         wolfSPDM_DebugPrint(ctx, "PSK_FINISH error: 0x%02x\n", buf[2]);
         return WOLFSPDM_E_PEER_ERROR;
     }
@@ -297,13 +335,15 @@ int wolfSPDM_DeriveHandshakeKeysPsk(WOLFSPDM_CTX* ctx, const byte* th1Hash)
     /* HandshakeSecret = HKDF-Extract(0xFF-salt, PSK) */
     rc = wc_HKDF_Extract(WC_SHA384, salt, sizeof(salt),
         ctx->psk, ctx->pskSz, ctx->handshakeSecret);
-    if (rc != 0) {
-        wc_ForceZero(ctx->psk, sizeof(ctx->psk));
-        ctx->pskSz = 0;
-        return WOLFSPDM_E_CRYPTO_FAIL;
+    if (rc == 0) {
+        rc = wolfSPDM_DeriveFromHandshakeSecret(ctx, th1Hash);
     }
-
-    rc = wolfSPDM_DeriveFromHandshakeSecret(ctx, th1Hash);
+    else {
+        rc = WOLFSPDM_E_CRYPTO_FAIL;
+    }
+    if (rc != WOLFSPDM_SUCCESS) {
+        wc_ForceZero(ctx->handshakeSecret, sizeof(ctx->handshakeSecret));
+    }
 
     /* Zero PSK immediately after key derivation */
     wc_ForceZero(ctx->psk, sizeof(ctx->psk));
@@ -314,8 +354,8 @@ int wolfSPDM_DeriveHandshakeKeysPsk(WOLFSPDM_CTX* ctx, const byte* th1Hash)
 
 /* ----- Shared PSK Connection Flow ----- */
 
-/* GET_VERSION -> GET_CAPABILITIES -> NEGOTIATE_ALGORITHMS ->
- * PSK_EXCHANGE -> PSK_FINISH -> app key derivation */
+/* GET_VERSION -> PSK_EXCHANGE -> [PSK_FINISH] -> application key derivation.
+ * This PSK flow skips GET_CAPABILITIES and NEGOTIATE_ALGORITHMS. */
 int wolfSPDM_ConnectPsk(WOLFSPDM_CTX* ctx)
 {
     int rc;
@@ -323,12 +363,13 @@ int wolfSPDM_ConnectPsk(WOLFSPDM_CTX* ctx)
     byte rxBuf[WOLFSPDM_MAX_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD];
     byte finBuf[64];
     byte encBuf[WOLFSPDM_MAX_MSG_SIZE + WOLFSPDM_AEAD_OVERHEAD];
-    byte decBuf[64];
+    byte decBuf[WOLFSPDM_FINISH_RSP_MAX];
     word32 txSz;
     word32 rxSz;
     word32 finSz;
     word32 encSz;
     word32 decSz;
+    int finish = 0;
 
     if (ctx == NULL) {
         return WOLFSPDM_E_INVALID_ARG;
@@ -348,9 +389,6 @@ int wolfSPDM_ConnectPsk(WOLFSPDM_CTX* ctx)
     }
 
     wolfSPDM_DebugPrint(ctx, "PSK: Starting SPDM connection\n");
-
-    ctx->state = WOLFSPDM_STATE_INIT;
-    wolfSPDM_TranscriptReset(ctx);
 
     /* Step 1: GET_VERSION */
     wolfSPDM_DebugPrint(ctx, "PSK Step 1: GET_VERSION\n");
@@ -377,9 +415,14 @@ int wolfSPDM_ConnectPsk(WOLFSPDM_CTX* ctx)
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_ParsePskExchangeRsp(ctx, rxBuf, rxSz);
     }
+    /* DSP0274 10.20: PSK_FINISH follows only when ResponderContext is present;
+     * otherwise PSK_EXCHANGE_RSP completes the handshake. */
+    if (rc == WOLFSPDM_SUCCESS) {
+        finish = (SPDM_Get16LE(&rxBuf[8]) != 0);
+    }
 
     /* Step 5: PSK_FINISH / PSK_FINISH_RSP (encrypted) */
-    if (rc == WOLFSPDM_SUCCESS) {
+    if (rc == WOLFSPDM_SUCCESS && finish) {
         finSz = sizeof(finBuf);
         encSz = sizeof(encBuf);
         rxSz = sizeof(rxBuf);
@@ -388,16 +431,21 @@ int wolfSPDM_ConnectPsk(WOLFSPDM_CTX* ctx)
         wolfSPDM_DebugPrint(ctx, "PSK Step 5: PSK_FINISH\n");
         rc = wolfSPDM_BuildPskFinish(ctx, finBuf, &finSz);
     }
-    if (rc == WOLFSPDM_SUCCESS) {
+    if (rc == WOLFSPDM_SUCCESS && finish) {
         rc = wolfSPDM_EncryptInternal(ctx, finBuf, finSz, encBuf, &encSz);
     }
-    if (rc == WOLFSPDM_SUCCESS) {
+    if (rc == WOLFSPDM_SUCCESS && finish) {
         rc = wolfSPDM_SendReceive(ctx, encBuf, encSz, rxBuf, &rxSz);
     }
-    if (rc == WOLFSPDM_SUCCESS) {
+    if (rc == WOLFSPDM_SUCCESS && finish && rxSz >= 4 &&
+            rxBuf[0] == ctx->spdmVersion && rxBuf[1] == SPDM_ERROR) {
+        ctx->lastPeerErrorCode = rxBuf[2];
+        rc = WOLFSPDM_E_PEER_ERROR;
+    }
+    if (rc == WOLFSPDM_SUCCESS && finish) {
         rc = wolfSPDM_DecryptInternal(ctx, rxBuf, rxSz, decBuf, &decSz);
     }
-    if (rc == WOLFSPDM_SUCCESS) {
+    if (rc == WOLFSPDM_SUCCESS && finish) {
         rc = wolfSPDM_ParsePskFinishRsp(ctx, decBuf, decSz);
     }
 
@@ -412,6 +460,7 @@ int wolfSPDM_ConnectPsk(WOLFSPDM_CTX* ctx)
             "SessionID=0x%08x\n", ctx->sessionId);
     }
     else {
+        wolfSPDM_ResetSession(ctx);
         ctx->state = WOLFSPDM_STATE_ERROR;
     }
 

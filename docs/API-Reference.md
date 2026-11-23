@@ -19,7 +19,7 @@ otherwise; failures are negative error codes from `wolfspdm/spdm_error.h`.
 
 - `wolfSPDM_SetIO` / `wolfSPDM_HasIO`
 - `wolfSPDM_SetMode` / `wolfSPDM_GetMode` *(`WOLFSPDM_MODE_AUTO` / `_NUVOTON` / `_NATIONS` / `_NATIONS_PSK`, alias `_PSK` / `_TCG`)*. `_TCG` is the TCG binding with no vendor commands, which is what the SLB9678 uses; `_AUTO` is the standard DMTF requester, so a TPM caller sets the mode explicitly.
-- `wolfSPDM_SetResponderPubKey`: pin the responder key (96-byte P-384 X‖Y) for cert-less operation
+- `wolfSPDM_SetResponderPubKey`: pin the responder key (96-byte P-384 X‖Y). The TCG binding uses it without a certificate (SlotID 0xFF); the standard binding matches it against the leaf of the retrieved chain, so `KEY_EXCHANGE` returns `WOLFSPDM_E_BAD_STATE` until `GET_CERTIFICATE` has run
 - `wolfSPDM_SetRequesterKeyPair` *(`WOLFSPDM_MUTUAL_AUTH` builds, TCG or TPM profile)*
 - `wolfSPDM_SetMaxVersion`: cap the negotiated version (0x12-0x14)
 - `wolfSPDM_SetRequesterSessionId`: rejects `0x0000`, `0xFFFF`, and low bytes `0x10`-`0x1F`
@@ -65,7 +65,7 @@ otherwise; failures are negative error codes from `wolfspdm/spdm_error.h`.
 ## Session maintenance
 
 - `wolfSPDM_Heartbeat` *(`WOLFSPDM_HAS_HEARTBEAT`)*
-- `wolfSPDM_KeyUpdate` *(`WOLFSPDM_HAS_KEY_UPDATE`)*
+- `wolfSPDM_KeyUpdate` *(`WOLFSPDM_HAS_KEY_UPDATE`)*: if `VerifyNewKey` fails after the responder acknowledged the update, the session ends and must be re-established
 
 ## TCG SPDM binding (`wolfspdm/spdm_tcg.h`, `WOLFSPDM_TCG`)
 

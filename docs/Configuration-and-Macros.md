@@ -30,6 +30,11 @@ From `configure.ac`:
 (42 to `WOLFSPDM_MAX_MSG_SIZE`); smaller values shrink transport buffers and
 rely more on chunking.
 
+Certificate validity uses the wolfCrypt clock. On targets without a clock,
+build wolfSSL and wolfSPDM with matching `NO_ASN_TIME` or
+`NO_ASN_TIME_CHECK` settings to skip date checks. Chain signature, Key Usage,
+and CA path length checks still apply.
+
 ## wolfTPM build profile
 
 Built inside wolfTPM (`WOLFTPM_SPDM`), `WOLFSPDM_PROFILE_TPM` is implied, and

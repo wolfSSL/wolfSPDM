@@ -67,7 +67,44 @@ static int wolfSPDM_BuildGetVersionAdapter(WOLFSPDM_CTX* ctx, byte* buf,
 int wolfSPDM_GetVersion(WOLFSPDM_CTX* ctx)
 {
     byte txBuf[8];
-    byte rxBuf[32];  /* VERSION: 4 hdr + 2 count + up to 8 entries * 2 = 22 */
+    byte rxBuf[SPDM_MIN_DATA_TRANSFER_SIZE];
+
+    if (ctx == NULL) {
+        return WOLFSPDM_E_INVALID_ARG;
+    }
+    if (!ctx->flags.initialized) {
+        return WOLFSPDM_E_BAD_STATE;
+    }
+    if (ctx->ioCb == NULL) {
+        return WOLFSPDM_E_IO_FAIL;
+    }
+
+    /* GET_VERSION starts a new negotiation and ends any prior session. */
+    wolfSPDM_ResetSession(ctx);
+    wolfSPDM_TranscriptReset(ctx);
+    ctx->spdmVersion = 0;
+    ctx->lastPeerErrorCode = 0;
+#ifndef WOLFSPDM_NO_CERT
+    ctx->vcaLen = 0;
+    ctx->certChainLen = 0;
+    ctx->slotMask = 0;
+    ctx->currentSlotId = 0;
+    if (ctx->flags.rspKeyFromCert) {
+        ctx->flags.hasRspPubKey = 0;
+        ctx->flags.rspKeyFromCert = 0;
+        ctx->rspPubKeyLen = 0;
+        wc_ForceZero(ctx->rspPubKey, sizeof(ctx->rspPubKey));
+    }
+    #ifndef WOLFSPDM_NO_CHUNK
+    ctx->chunkHandle = 0;
+    #endif
+    #ifdef WOLFSPDM_HAVE_MLDSA
+    ctx->pqcAsymSel = 0;
+    #endif
+    #ifdef WOLFSPDM_HAVE_MLKEM
+    ctx->kemAlgSel = 0;
+    #endif
+#endif
 
     return wolfSPDM_ExchangeMsg(ctx, wolfSPDM_BuildGetVersionAdapter,
         wolfSPDM_ParseVersion, txBuf, sizeof(txBuf), rxBuf, sizeof(rxBuf));
@@ -79,6 +116,7 @@ static int wolfSPDM_KeyExchangeEx(WOLFSPDM_CTX* ctx, int revalidate)
     byte rxBuf[WOLFSPDM_KEY_EX_RX_SZ];
     word32 txSz = sizeof(txBuf);
     word32 rxSz = sizeof(rxBuf);
+    word32 mark = (ctx != NULL) ? ctx->transcriptLen : 0;
     int rc;
 
     /* The signature in KEY_EXCHANGE_RSP can only be checked against a
@@ -92,9 +130,13 @@ static int wolfSPDM_KeyExchangeEx(WOLFSPDM_CTX* ctx, int revalidate)
     else {
         rc = WOLFSPDM_SUCCESS;
     #ifndef WOLFSPDM_NO_CERT
-        if (revalidate && !wolfSPDM_IsTcgMode(ctx) &&
-                ctx->flags.rspKeyFromCert) {
-            rc = wolfSPDM_ValidateCertChain(ctx);
+        if (ctx->flags.rspKeyFromCert) {
+            if (wolfSPDM_IsTcgMode(ctx)) {
+                rc = WOLFSPDM_E_BAD_STATE;
+            }
+            else if (revalidate) {
+                rc = wolfSPDM_ValidateCertChain(ctx);
+            }
         }
     #else
         (void)revalidate;
@@ -121,6 +163,9 @@ static int wolfSPDM_KeyExchangeEx(WOLFSPDM_CTX* ctx, int revalidate)
     if (rc == WOLFSPDM_SUCCESS) {
         wolfSPDM_DebugPrint(ctx, "KEY_EXCHANGE_RSP: received %u bytes\n", rxSz);
         rc = wolfSPDM_ParseKeyExchangeRsp(ctx, rxBuf, rxSz);
+    }
+    if (rc != WOLFSPDM_SUCCESS && ctx != NULL && ctx->transcriptLen > mark) {
+        ctx->transcriptLen = mark;
     }
 
     return rc;
@@ -161,13 +206,7 @@ static int wolfSPDM_FinishXfer(WOLFSPDM_CTX* ctx, const byte* finishBuf,
         rc = wolfSPDM_SendReceive(ctx, encBuf, encSz, rxBuf, &rxSz);
     }
 
-    /* Check for unencrypted SPDM error response */
-    if (rc == WOLFSPDM_SUCCESS &&
-        rxSz >= 2 && rxBuf[0] >= 0x10 && rxBuf[0] <= 0x1F) {
-        if (rxSz >= 4 && rxBuf[1] == SPDM_ERROR) {
-            ctx->lastPeerErrorCode = rxBuf[2];
-            wolfSPDM_DebugPrint(ctx, "FINISH: SPDM ERROR 0x%02x\n", rxBuf[2]);
-        }
+    if (rc == WOLFSPDM_SUCCESS && wolfSPDM_ClearPeerError(ctx, rxBuf, rxSz)) {
         rc = WOLFSPDM_E_PEER_ERROR;
     }
 
@@ -184,6 +223,7 @@ int wolfSPDM_Finish(WOLFSPDM_CTX* ctx)
     byte decBuf[WOLFSPDM_FINISH_RSP_MAX];
     word32 finishSz = sizeof(finishBuf);
     word32 decSz = sizeof(decBuf);
+    word32 mark;
     int rc;
 
     /* FINISH is only valid after a successful KEY_EXCHANGE; otherwise the
@@ -192,6 +232,7 @@ int wolfSPDM_Finish(WOLFSPDM_CTX* ctx)
         return WOLFSPDM_E_BAD_STATE;
     }
 
+    mark = ctx->transcriptLen;
     rc = wolfSPDM_BuildFinish(ctx, finishBuf, &finishSz);
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_FinishXfer(ctx, finishBuf, finishSz, decBuf, &decSz);
@@ -203,6 +244,13 @@ int wolfSPDM_Finish(WOLFSPDM_CTX* ctx)
     /* Derive application data keys (transition from handshake to app phase) */
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_DeriveAppDataKeys(ctx);
+    }
+
+    if (rc == WOLFSPDM_SUCCESS) {
+        ctx->state = WOLFSPDM_STATE_CONNECTED;
+    }
+    else {
+        ctx->transcriptLen = mark;
     }
 
     /* Always zero sensitive stack buffers */
@@ -313,6 +361,7 @@ int wolfSPDM_KeyUpdate(WOLFSPDM_CTX* ctx, int updateAll)
     byte op;
     byte tag = 0;
     int rotated = 0;
+    int verifying = 0;
     int rc;
 
     op = updateAll ? SPDM_KEY_UPDATE_OP_UPDATE_ALL_KEYS :
@@ -361,10 +410,19 @@ int wolfSPDM_KeyUpdate(WOLFSPDM_CTX* ctx, int updateAll)
     }
     if (rc == WOLFSPDM_SUCCESS && !updateAll) {
         rc = wolfSPDM_DeriveUpdatedKeys(ctx, 0);
-        ctx->reqSeqNum = 0;
+        if (rc == WOLFSPDM_SUCCESS) {
+            ctx->reqSeqNum = 0;
+        }
+        else {
+            /* The peer acknowledged the update. Retire the session when
+             * we cannot install the new keys. */
+            wolfSPDM_ResetSession(ctx);
+            ctx->state = WOLFSPDM_STATE_ERROR;
+        }
     }
 
     if (rc == WOLFSPDM_SUCCESS) {
+        verifying = 1;
         txSz = sizeof(txBuf);
         rc = wolfSPDM_BuildKeyUpdate(ctx, txBuf, &txSz,
             SPDM_KEY_UPDATE_OP_VERIFY_NEW_KEY, &tag);
@@ -376,6 +434,11 @@ int wolfSPDM_KeyUpdate(WOLFSPDM_CTX* ctx, int updateAll)
     if (rc == WOLFSPDM_SUCCESS) {
         rc = wolfSPDM_ParseKeyUpdateAck(ctx, rxBuf, rxSz,
             SPDM_KEY_UPDATE_OP_VERIFY_NEW_KEY, tag);
+    }
+    /* DSP0274: an unconfirmed new key is retried or ends the session */
+    if (rc != WOLFSPDM_SUCCESS && verifying) {
+        wolfSPDM_ResetSession(ctx);
+        ctx->state = WOLFSPDM_STATE_ERROR;
     }
 
     wc_ForceZero(saved, sizeof(saved));

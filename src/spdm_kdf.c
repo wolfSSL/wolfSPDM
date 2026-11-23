@@ -25,8 +25,9 @@
 
 #include "spdm_internal.h"
 
-/* SPDM key derivation (DSP0277): HKDF with
- * info = Length(2,LE) || "spdm1.2 " || Label || Context. */
+/* SPDM key derivation (DSP0274) uses HKDF with
+ * info = Length (2 bytes, little endian) || "spdmX.Y " || Label || Context.
+ * X.Y is the negotiated SPDM version. */
 
 int wolfSPDM_HkdfExpandLabel(byte spdmVersion, const byte* secret, word32 secretSz,
     const char* label, const byte* context, word32 contextSz,
@@ -100,18 +101,13 @@ int wolfSPDM_ComputeVerifyData(const byte* finishedKey, const byte* thHash,
     }
 
     rc = wc_HmacSetKey(&hmac, WC_SHA384, finishedKey, WOLFSPDM_HASH_SIZE);
-    if (rc != 0) {
-        wc_HmacFree(&hmac);
-        return WOLFSPDM_E_CRYPTO_FAIL;
+    if (rc == 0) {
+        rc = wc_HmacUpdate(&hmac, thHash, WOLFSPDM_HASH_SIZE);
+    }
+    if (rc == 0) {
+        rc = wc_HmacFinal(&hmac, verifyData);
     }
 
-    rc = wc_HmacUpdate(&hmac, thHash, WOLFSPDM_HASH_SIZE);
-    if (rc != 0) {
-        wc_HmacFree(&hmac);
-        return WOLFSPDM_E_CRYPTO_FAIL;
-    }
-
-    rc = wc_HmacFinal(&hmac, verifyData);
     wc_HmacFree(&hmac);
     wc_ForceZero(&hmac, sizeof(hmac));
 
@@ -173,8 +169,8 @@ int wolfSPDM_DeriveFromHandshakeSecret(WOLFSPDM_CTX* ctx,
     }
 
     if (rc != WOLFSPDM_SUCCESS) {
-        /* wipe any partially derived material so it cannot carry into a
-         * reused ctx */
+        /* Wipe the root and any partially derived material. */
+        wc_ForceZero(ctx->handshakeSecret, sizeof(ctx->handshakeSecret));
         wc_ForceZero(ctx->reqHsSecret, sizeof(ctx->reqHsSecret));
         wc_ForceZero(ctx->rspHsSecret, sizeof(ctx->rspHsSecret));
         wc_ForceZero(ctx->reqFinishedKey, sizeof(ctx->reqFinishedKey));
@@ -212,6 +208,18 @@ int wolfSPDM_DeriveHandshakeKeys(WOLFSPDM_CTX* ctx, const byte* th1Hash)
 }
 
 /* PSK key derivation moved to spdm_psk.c */
+
+void wolfSPDM_ClearHandshakeSecrets(WOLFSPDM_CTX* ctx)
+{
+    wc_ForceZero(ctx->sharedSecret, sizeof(ctx->sharedSecret));
+    ctx->sharedSecretSz = 0;
+    wc_ForceZero(ctx->handshakeSecret, sizeof(ctx->handshakeSecret));
+    wc_ForceZero(ctx->reqHsSecret, sizeof(ctx->reqHsSecret));
+    wc_ForceZero(ctx->rspHsSecret, sizeof(ctx->rspHsSecret));
+    wc_ForceZero(ctx->reqFinishedKey, sizeof(ctx->reqFinishedKey));
+    wc_ForceZero(ctx->rspFinishedKey, sizeof(ctx->rspFinishedKey));
+    wolfSPDM_FreeEphemeralKey(ctx);
+}
 
 int wolfSPDM_DeriveAppDataKeys(WOLFSPDM_CTX* ctx)
 {
@@ -274,6 +282,7 @@ int wolfSPDM_DeriveAppDataKeys(WOLFSPDM_CTX* ctx)
         XMEMCPY(ctx->reqAppSecret, reqAppSecret, WOLFSPDM_HASH_SIZE);
         XMEMCPY(ctx->rspAppSecret, rspAppSecret, WOLFSPDM_HASH_SIZE);
     #endif
+        wolfSPDM_ClearHandshakeSecrets(ctx);
         /* Reset sequence numbers for application phase */
         ctx->reqSeqNum = 0;
         ctx->rspSeqNum = 0;

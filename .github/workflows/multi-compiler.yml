@@ -15,7 +15,8 @@ concurrency:
 jobs:
   compiler_test:
     name: ${{ matrix.cc }}
-    runs-on: ubuntu-latest
+    # 26.04 dropped the older gcc and clang packages this matrix installs
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -41,7 +42,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/wolfssl-install
-        key: wolfssl-ubuntu-latest-v1
+        key: wolfssl-ubuntu-24.04-v1
 
     - name: Build wolfSSL
       if: steps.cache-wolfssl.outputs.cache-hit != 'true'

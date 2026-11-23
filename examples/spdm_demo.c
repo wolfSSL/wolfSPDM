@@ -224,7 +224,7 @@ static byte* load_der(const char* path, word32* outSz)
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     sz = ftell(f);
     if (sz <= 0) { fclose(f); return NULL; }
-    rewind(f);
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
 
     buf = (byte*)malloc((size_t)sz);
     if (buf == NULL) { fclose(f); return NULL; }

@@ -28,6 +28,7 @@
 #ifndef WOLFSPDM_NO_CERT
 
 #include <wolfssl/wolfcrypt/asn.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
 
 /* Largest certificate portion requested per GET_CERTIFICATE; the response
  * fills our DataTransferSize so certificates are never chunked */
@@ -36,6 +37,10 @@
 #endif
 
 /* ----- VCA: GET_CAPABILITIES / NEGOTIATE_ALGORITHMS ----- */
+
+#define SPDM_OPAQUE_FORMAT_MASK   0x03
+#define SPDM_OPAQUE_FORMAT_1      0x02
+#define SPDM_REQUESTER_MULTI_KEY  0x10
 
 int wolfSPDM_BuildGetCapabilities(WOLFSPDM_CTX* ctx, byte* buf, word32* bufSz)
 {
@@ -86,6 +91,18 @@ int wolfSPDM_ParseCapabilities(WOLFSPDM_CTX* ctx, const byte* buf,
     return WOLFSPDM_SUCCESS;
 }
 
+#ifdef WOLFSPDM_HAVE_MLDSA
+static word32 wolfSPDM_OfferedPqcAsym(const WOLFSPDM_CTX* ctx)
+{
+    /* Provisioned P-384 pins can authenticate only P-384 peers. */
+    if (ctx->spdmVersion < SPDM_VERSION_14 ||
+            (ctx->flags.hasRspPubKey && !ctx->flags.rspKeyFromCert)) {
+        return 0;
+    }
+    return WOLFSPDM_MLDSA_SETS;
+}
+#endif
+
 int wolfSPDM_BuildNegotiateAlgorithms(WOLFSPDM_CTX* ctx, byte* buf,
     word32* bufSz)
 {
@@ -112,14 +129,11 @@ int wolfSPDM_BuildNegotiateAlgorithms(WOLFSPDM_CTX* ctx, byte* buf,
     buf[0] = ctx->spdmVersion;
     buf[1] = SPDM_NEGOTIATE_ALGORITHMS;
     buf[6] = 0x01;                  /* MeasurementSpecification = DMTF */
-    buf[7] = 0x02;                  /* OtherParams = OpaqueDataFmt1 */
+    buf[7] = SPDM_OPAQUE_FORMAT_1;
     SPDM_Set32LE(&buf[8], SPDM_ASYM_ALGO_ECDSA_P384);
     SPDM_Set32LE(&buf[12], SPDM_HASH_ALGO_SHA_384);
 #ifdef WOLFSPDM_HAVE_MLDSA
-    /* PqcAsymAlgo, reserved before 1.4 */
-    if (ctx->spdmVersion >= SPDM_VERSION_14) {
-        SPDM_Set32LE(&buf[16], WOLFSPDM_MLDSA_SETS);
-    }
+    SPDM_Set32LE(&buf[16], wolfSPDM_OfferedPqcAsym(ctx));
 #endif
 
     if (advDhe) {
@@ -132,10 +146,8 @@ int wolfSPDM_BuildNegotiateAlgorithms(WOLFSPDM_CTX* ctx, byte* buf,
     buf[off + 1] = 0x20;
     SPDM_Set16LE(&buf[off + 2], SPDM_AEAD_ALGO_AES_256_GCM);
     off += 4;
-    buf[off] = SPDM_ALG_TYPE_REQ_BASE_ASYM;
-    buf[off + 1] = 0x20;
-    SPDM_Set16LE(&buf[off + 2], (word16)SPDM_ASYM_ALGO_ECDSA_P384);
-    off += 4;
+    /* No ReqBaseAsymAlg: this binding sends no MUT_AUTH_CAP and refuses
+     * MutAuthRequested, so the requester never signs (DSP0274 10.4) */
     buf[off] = SPDM_ALG_TYPE_KEY_SCHEDULE;
     buf[off + 1] = 0x20;
     SPDM_Set16LE(&buf[off + 2], SPDM_KEY_SCHEDULE_SPDM);
@@ -168,6 +180,7 @@ int wolfSPDM_ParseAlgorithms(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufSz)
 #endif
     byte numAlgs;
     byte i;
+    byte otherParamsMask = SPDM_OPAQUE_FORMAT_MASK;
     int dheOk = 0;
     int kemOk = 0;
     int aeadOk = 0;
@@ -181,8 +194,11 @@ int wolfSPDM_ParseAlgorithms(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufSz)
             SPDM_Get16LE(&buf[4]) != bufSz) {
         return WOLFSPDM_E_ALGO_MISMATCH;
     }
-    /* MeasurementSpecificationSel (none or DMTF), OtherParamsSel */
-    if (buf[6] > 0x01 || buf[7] != 0x02) {
+    /* RequesterMultiKeyConnSel is defined since 1.3 and never offered. */
+    if (ctx->spdmVersion >= SPDM_VERSION_13) {
+        otherParamsMask |= SPDM_REQUESTER_MULTI_KEY;
+    }
+    if (buf[6] > 0x01 || (buf[7] & otherParamsMask) != SPDM_OPAQUE_FORMAT_1) {
         return WOLFSPDM_E_ALGO_MISMATCH;
     }
     if (SPDM_Get32LE(&buf[16]) != SPDM_HASH_ALGO_SHA_384) {
@@ -201,7 +217,8 @@ int wolfSPDM_ParseAlgorithms(WOLFSPDM_CTX* ctx, const byte* buf, word32 bufSz)
     }
     if (pqcAsymSel != 0) {
 #ifdef WOLFSPDM_HAVE_MLDSA
-        if (baseAsymSel != 0 || wolfSPDM_MlDsaLevel(pqcAsymSel) == 0) {
+        if (baseAsymSel != 0 || wolfSPDM_MlDsaLevel(pqcAsymSel) == 0 ||
+                (pqcAsymSel & wolfSPDM_OfferedPqcAsym(ctx)) == 0) {
             return WOLFSPDM_E_ALGO_MISMATCH;
         }
 #else
@@ -391,6 +408,16 @@ int wolfSPDM_GetCertificate(WOLFSPDM_CTX* ctx, int slotId)
     if (ctx == NULL || slotId < 0 || slotId > 7) {
         return WOLFSPDM_E_INVALID_ARG;
     }
+    /* The fetched chain and transcript are used by the current session. */
+    if (ctx->state >= WOLFSPDM_STATE_KEY_EX &&
+            ctx->state <= WOLFSPDM_STATE_CONNECTED) {
+        return WOLFSPDM_E_BAD_STATE;
+    }
+
+    /* TH uses one certificate hash. M1 includes each certificate exchange. */
+    if (ctx->transcriptLen > ctx->vcaLen) {
+        ctx->transcriptLen = ctx->vcaLen;
+    }
 
     /* The CERTIFICATE response (8-byte header + portion) must fit the
      * responder's DataTransferSize */
@@ -513,7 +540,14 @@ typedef struct {
     word32 oid;
     word32 len;
     byte   der[WOLFSPDM_CERT_KEY_SZ];
+    int    canIssue;
 } WOLFSPDM_CERT_KEY;
+
+typedef enum {
+    WOLFSPDM_CERT_ANCHOR,
+    WOLFSPDM_CERT_INTERMEDIATE,
+    WOLFSPDM_CERT_LEAF
+} WOLFSPDM_CERT_ROLE;
 
 #ifdef WOLFSPDM_HAVE_MLDSA
 static byte wolfSPDM_KeyOidMlDsaLevel(word32 oid)
@@ -545,35 +579,73 @@ static byte wolfSPDM_SigOidMlDsaLevel(word32 oid)
 }
 #endif /* WOLFSPDM_HAVE_MLDSA */
 
-/* Read the subject key and CA flag of a certificate */
-static int wolfSPDM_CertKey(const byte* der, word32 derSz,
-    WOLFSPDM_CERT_KEY* key, int* isCA)
+static int wolfSPDM_CheckCertUsage(const DecodedCert* cert,
+    WOLFSPDM_CERT_ROLE role, word32* pathLen)
 {
+    if (role == WOLFSPDM_CERT_LEAF) {
+        if (cert->isCA || (cert->extKeyUsageSet &&
+                (cert->extKeyUsage & KEYUSE_DIGITAL_SIG) == 0)) {
+            return WOLFSPDM_E_CERT_FAIL;
+        }
+    }
+    else {
+        /* RFC 5280 counts non-self-issued intermediate CAs. */
+        if (role == WOLFSPDM_CERT_INTERMEDIATE && !cert->selfSigned) {
+            if (*pathLen == 0) {
+                return WOLFSPDM_E_CERT_FAIL;
+            }
+            (*pathLen)--;
+        }
+        if (cert->pathLengthSet && cert->pathLength < *pathLen) {
+            *pathLen = cert->pathLength;
+        }
+    }
+    return WOLFSPDM_SUCCESS;
+}
+
+/* Read the subject key and its authorization for use in this chain. */
+static int wolfSPDM_CertKey(const byte* der, word32 derSz,
+    WOLFSPDM_CERT_KEY* key, WOLFSPDM_CERT_ROLE role, word32* pathLen)
+{
+#if defined(NO_ASN_TIME) || defined(NO_ASN_TIME_CHECK)
+    const int verify = NO_VERIFY;
+#else
+    const int verify = VERIFY;
+#endif
     DecodedCert cert;
     int rc;
 
     wc_InitDecodedCert(&cert, der, derSz, NULL);
-    rc = wc_ParseCert(&cert, CERT_TYPE, NO_VERIFY, NULL);
-    if (rc == 0 && cert.keyOID != ECDSAk
+    /* The parse checks dates. CertSignedBy verifies the issuer's signature. */
+    rc = wc_ParseCert(&cert, CA_TYPE, verify, NULL);
+    if (rc != 0) {
+        rc = (rc == ASN_BEFORE_DATE_E || rc == ASN_AFTER_DATE_E) ?
+            WOLFSPDM_E_CERT_FAIL : WOLFSPDM_E_CERT_PARSE;
+        goto cleanup;
+    }
+    if (cert.keyOID != ECDSAk
     #ifdef WOLFSPDM_HAVE_MLDSA
             && wolfSPDM_KeyOidMlDsaLevel(cert.keyOID) == 0
     #endif
             ) {
-        rc = -1;
+        rc = WOLFSPDM_E_CERT_PARSE;
+        goto cleanup;
     }
-    if (rc == 0 && (cert.publicKey == NULL ||
-            cert.pubKeySize > sizeof(key->der))) {
-        rc = -1;
+    if (cert.publicKey == NULL || cert.pubKeySize > sizeof(key->der)) {
+        rc = WOLFSPDM_E_CERT_PARSE;
+        goto cleanup;
     }
-    if (rc == 0) {
+    rc = wolfSPDM_CheckCertUsage(&cert, role, pathLen);
+    if (rc == WOLFSPDM_SUCCESS) {
         key->oid = cert.keyOID;
         key->len = cert.pubKeySize;
         XMEMCPY(key->der, cert.publicKey, cert.pubKeySize);
-        *isCA = cert.isCA;
+        key->canIssue = cert.isCA && (!cert.extKeyUsageSet ||
+            (cert.extKeyUsage & KEYUSE_KEY_CERT_SIGN) != 0);
     }
+cleanup:
     wc_FreeDecodedCert(&cert);
-
-    return (rc == 0) ? WOLFSPDM_SUCCESS : WOLFSPDM_E_CERT_PARSE;
+    return rc;
 }
 
 /* ECDSA verify of hash under an ECC SubjectPublicKeyInfo */
@@ -703,8 +775,8 @@ int wolfSPDM_ValidateCertChain(WOLFSPDM_CTX* ctx)
     WOLFSPDM_CERT_KEY key;
     word32 leafSz = WOLFSPDM_RSP_PUBKEY_SZ;
     word32 pos = WOLFSPDM_CERT_CHAIN_HDR_SZ;
+    word32 pathLen = WOLFSPDM_MAX_CERT_CHAIN;
     int haveKey = 0;
-    int isCA = 0;
     int anchored = 0;
     int rc = WOLFSPDM_SUCCESS;
 
@@ -734,7 +806,7 @@ int wolfSPDM_ValidateCertChain(WOLFSPDM_CTX* ctx)
         }
         if (rc == WOLFSPDM_SUCCESS) {
             rc = wolfSPDM_CertKey(ctx->trustedCA, ctx->trustedCASz, &key,
-                &isCA);
+                WOLFSPDM_CERT_ANCHOR, &pathLen);
             haveKey = (rc == WOLFSPDM_SUCCESS);
         }
         anchored = 1;
@@ -743,20 +815,30 @@ int wolfSPDM_ValidateCertChain(WOLFSPDM_CTX* ctx)
     while (rc == WOLFSPDM_SUCCESS && pos < ctx->certChainLen) {
         word32 certSz = wolfSPDM_DerSeqLen(ctx->certChain + pos,
             ctx->certChainLen - pos);
+        int anchorCopy = (anchored && pos == WOLFSPDM_CERT_CHAIN_HDR_SZ &&
+            certSz == ctx->trustedCASz &&
+            XMEMCMP(ctx->certChain + pos, ctx->trustedCA, certSz) == 0);
+
         if (certSz == 0) {
             rc = WOLFSPDM_E_CERT_PARSE;
         }
         /* The configured root is the anchor; its own signature adds nothing */
-        if (rc == WOLFSPDM_SUCCESS && haveKey &&
-                !(anchored && pos == WOLFSPDM_CERT_CHAIN_HDR_SZ &&
-                  certSz == ctx->trustedCASz &&
-                  XMEMCMP(ctx->certChain + pos, ctx->trustedCA,
-                      certSz) == 0)) {
-            rc = isCA ? wolfSPDM_CertSignedBy(ctx->certChain + pos, certSz,
-                &key) : WOLFSPDM_E_CERT_FAIL;
+        if (rc == WOLFSPDM_SUCCESS && haveKey && !anchorCopy) {
+            rc = key.canIssue ? wolfSPDM_CertSignedBy(ctx->certChain + pos,
+                certSz, &key) : WOLFSPDM_E_CERT_FAIL;
         }
         if (rc == WOLFSPDM_SUCCESS) {
-            rc = wolfSPDM_CertKey(ctx->certChain + pos, certSz, &key, &isCA);
+            WOLFSPDM_CERT_ROLE role;
+
+            if (certSz == ctx->certChainLen - pos) {
+                role = WOLFSPDM_CERT_LEAF;
+            }
+            else {
+                role = (anchorCopy || !haveKey) ? WOLFSPDM_CERT_ANCHOR :
+                    WOLFSPDM_CERT_INTERMEDIATE;
+            }
+            rc = wolfSPDM_CertKey(ctx->certChain + pos, certSz, &key, role,
+                &pathLen);
             haveKey = (rc == WOLFSPDM_SUCCESS);
         }
         pos += certSz;
@@ -848,21 +930,6 @@ int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx)
     int slot = 0;
     int rc;
 
-    /* A key taken from a previous responder's chain is not a trust anchor */
-    if (ctx->flags.rspKeyFromCert) {
-        ctx->flags.hasRspPubKey = 0;
-        ctx->flags.rspKeyFromCert = 0;
-        ctx->rspPubKeyLen = 0;
-    }
-    ctx->state = WOLFSPDM_STATE_INIT;
-    ctx->lastPeerErrorCode = 0;
-    /* No chunking or other peer capability until CAPABILITIES says so */
-    ctx->rspCaps = 0;
-    wolfSPDM_TranscriptReset(ctx);
-#if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)
-    wolfSPDM_AttestFree(ctx);
-#endif
-
     SPDM_CONNECT_STEP(ctx, "GET_VERSION\n", wolfSPDM_GetVersion(ctx));
     SPDM_CONNECT_STEP(ctx, "GET_CAPABILITIES\n",
         wolfSPDM_GetCapabilities(ctx));
@@ -881,9 +948,14 @@ int wolfSPDM_ConnectStandard(WOLFSPDM_CTX* ctx)
         wolfSPDM_ValidateCertChain(ctx));
     SPDM_CONNECT_STEP(ctx, "KEY_EXCHANGE\n",
         wolfSPDM_KeyExchangeValidated(ctx));
-    SPDM_CONNECT_STEP(ctx, "FINISH\n", wolfSPDM_Finish(ctx));
+    wolfSPDM_DebugPrint(ctx, "FINISH\n");
+    rc = wolfSPDM_Finish(ctx);
+    if (rc != WOLFSPDM_SUCCESS) {
+        wolfSPDM_ResetSession(ctx);
+        ctx->state = WOLFSPDM_STATE_ERROR;
+        return rc;
+    }
 
-    ctx->state = WOLFSPDM_STATE_CONNECTED;
     wolfSPDM_DebugPrint(ctx, "SPDM session established, SessionID=0x%08x\n",
         ctx->sessionId);
     return WOLFSPDM_SUCCESS;

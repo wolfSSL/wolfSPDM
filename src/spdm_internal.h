@@ -40,6 +40,12 @@
     /* cppcheck-suppress preprocessorErrorDirective */
     #error "wolfSPDM requires SHA-384 (--enable-sha384 in wolfSSL)"
 #endif
+/* A peer can make these builds sign with a long-term identity key */
+#if (defined(WOLFSPDM_RESPONDER) || defined(WOLFSPDM_MUTUAL_AUTH)) && \
+    !defined(ECC_TIMING_RESISTANT)
+    /* cppcheck-suppress preprocessorErrorDirective */
+    #error "wolfSPDM signing requires ECC_TIMING_RESISTANT (--enable-harden in wolfSSL)"
+#endif
 #include <wolfssl/wolfcrypt/ecc.h>
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/sha512.h>
@@ -495,6 +501,10 @@ static WC_INLINE void wolfSPDM_BuildIV(byte* iv, const byte* baseIv,
             } \
             return (fallbackErr); \
         } \
+        if ((expected) != SPDM_VERSION && (ctx)->spdmVersion != 0 && \
+                (buf)[0] != (ctx)->spdmVersion) { \
+            return (fallbackErr); \
+        } \
     } while (0)
 
 /* ----- Internal Function Declarations - Transcript ----- */
@@ -543,6 +553,7 @@ WOLFSPDM_API int wolfSPDM_MlKemDecapsulate(WOLFSPDM_CTX* ctx, const byte* ct,
 
 WOLFSPDM_API int wolfSPDM_DeriveHandshakeKeys(WOLFSPDM_CTX* ctx, const byte* th1Hash);
 WOLFSPDM_API int wolfSPDM_DeriveFromHandshakeSecret(WOLFSPDM_CTX* ctx, const byte* th1Hash);
+WOLFSPDM_LOCAL void wolfSPDM_ClearHandshakeSecrets(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API int wolfSPDM_DeriveAppDataKeys(WOLFSPDM_CTX* ctx);
 WOLFSPDM_API int wolfSPDM_HkdfExpandLabel(byte spdmVersion, const byte* secret, word32 secretSz,
     const char* label, const byte* context, word32 contextSz,
@@ -584,6 +595,13 @@ WOLFSPDM_API int wolfSPDM_EncryptInternal(WOLFSPDM_CTX* ctx,
 WOLFSPDM_API int wolfSPDM_DecryptInternal(WOLFSPDM_CTX* ctx,
     const byte* enc, word32 encSz,
     byte* plain, word32* plainSz);
+WOLFSPDM_LOCAL int wolfSPDM_ClearPeerError(WOLFSPDM_CTX* ctx,
+    const byte* rx, word32 rxSz);
+#ifdef WOLFSPDM_RESPONDER
+WOLFSPDM_LOCAL int wolfSPDM_DecryptRequest(WOLFSPDM_CTX* ctx,
+    const byte* enc, word32 encSz,
+    byte* plain, word32* plainSz);
+#endif
 
 /* ----- Internal Utility Functions ----- */
 
@@ -613,10 +631,11 @@ WOLFSPDM_LOCAL int wolfSPDM_KeyExchangeValidated(WOLFSPDM_CTX* ctx);
 #endif
 
 #if !defined(WOLFSPDM_NO_MEAS) || !defined(WOLFSPDM_NO_CHALLENGE)
-/* Running transcript hash states */
+/* Running transcript hash states. M1 can still append in RUN_LIVE.
+ * L1/L2 continues across GET_MEASUREMENTS exchanges only in RUN_OPEN. */
 #define WOLFSPDM_RUN_NONE   0
-#define WOLFSPDM_RUN_LIVE   1   /* initialized, not extendable */
-#define WOLFSPDM_RUN_OPEN   2   /* extendable by the next message */
+#define WOLFSPDM_RUN_LIVE   1   /* hash initialized */
+#define WOLFSPDM_RUN_OPEN   2   /* L1/L2 measurement run open */
 WOLFSPDM_LOCAL void wolfSPDM_AttestFree(WOLFSPDM_CTX* ctx);
 #endif
 #ifndef WOLFSPDM_NO_MEAS
